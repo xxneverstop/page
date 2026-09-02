@@ -1,3 +1,5 @@
+import os
+
 from page.security import (
     REDACTED_VALUE,
     detected_secret_env_items,
@@ -47,4 +49,9 @@ def test_shell_env_uses_allowlist_and_sets_pwd_with_path_fallback(tmp_path):
 
     filtered = shell_env(env=env, allowlist=("HOME",), root=tmp_path)
 
-    assert filtered == {"HOME": "/home/user", "PWD": str(tmp_path), "PATH": "/usr/bin"}
+    assert filtered["HOME"] == "/home/user"
+    assert filtered["PWD"] == str(tmp_path)
+    assert filtered["PATH"] == "/usr/bin"
+    assert "SECRET" not in filtered
+    if os.name == "nt":
+        assert filtered["ComSpec"].lower().endswith("cmd.exe")

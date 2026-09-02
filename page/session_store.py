@@ -1,6 +1,7 @@
 """Session JSON persistence."""
 
 import json
+import tempfile
 from pathlib import Path
 
 
@@ -14,7 +15,18 @@ class SessionStore:
 
     def save(self, session):
         path = self.path(session["id"])
-        path.write_text(json.dumps(session, indent=2), encoding="utf-8")
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            delete=False,
+            dir=str(path.parent),
+            prefix=path.name + ".",
+            suffix=".tmp",
+        ) as handle:
+            json.dump(session, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            temp_name = handle.name
+        Path(temp_name).replace(path)
         return path
 
     def load(self, session_id):

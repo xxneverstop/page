@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import checkpoint as checkpointlib
+from .action_journal import ActionJournal, InjectedCrash
 from .features import memory as memorylib
 from . import security as securitylib
 from .context_manager import ContextManager
@@ -68,6 +69,8 @@ class Page:
         secret_env_names=None,
         feature_flags=None,
         allowed_tools=None,
+        resume_mode="guarded",
+        fault_injection=None,
     ):
         self.model_client = model_client
         self.workspace = workspace
@@ -85,6 +88,11 @@ class Page:
         if feature_flags:
             self.feature_flags.update({str(key): bool(value) for key, value in feature_flags.items()})
         self.allowed_tools = self._normalize_allowed_tools(allowed_tools)
+        self.resume_mode = str(resume_mode or "guarded").strip().lower()
+        if self.resume_mode not in {"guarded", "blind"}:
+            raise ValueError("resume_mode must be 'guarded' or 'blind'")
+        self.fault_injection = str(fault_injection or "").strip()
+        self._fault_injection_consumed = False
         self.run_store = run_store or RunStore(Path(workspace.repo_root) / ".page" / "runs")
         self.session = session or {
             "id": datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6],
@@ -101,10 +109,12 @@ class Page:
         self.session["memory"] = self.memory.to_dict()
         self.tools = self._apply_tool_allowlist(self.build_tools())
         self.tool_executor = ToolExecutor(self)
+        self.action_journal = ActionJournal(self)
         self.prefix_state = self.build_prefix()
         self.prefix = self.prefix_state.text
         self.context_manager = ContextManager(self)
         self.resume_state = self.evaluate_resume_state()
+        self.recovery_decision = self.action_journal.reconcile_all(self.resume_state.get("status", ""))
         self.session_path = self.session_store.save(self.session)
         self.current_task_state = None
         self.current_run_dir = None
@@ -144,6 +154,9 @@ class Page:
         resume_state = self.session.setdefault("resume_state", {})
         if not isinstance(resume_state, dict):
             self.session["resume_state"] = {}
+        journal = self.session.setdefault("action_journal", {})
+        if not isinstance(journal, dict):
+            self.session["action_journal"] = {}
 
     def current_runtime_identity(self):
         return checkpointlib.current_runtime_identity(self)
@@ -160,10 +173,53 @@ class Page:
         return invalidated
 
     def evaluate_resume_state(self):
+        if getattr(self, "resume_mode", "guarded") == "blind":
+            state = {
+                "status": "blind-unchecked",
+                "stale_paths": [],
+                "runtime_identity_mismatch_fields": [],
+                "stale_summary_invalidations": 0,
+            }
+            self.session["resume_state"] = state
+            return state
         return checkpointlib.evaluate_resume_state(self)
 
     def render_checkpoint_text(self):
         return checkpointlib.render_checkpoint_text(self)
+
+    def render_recovery_text(self):
+        decision = dict(getattr(self, "recovery_decision", {}) or self.session.get("recovery_decision", {}) or {})
+        if not decision:
+            return ""
+        action_fields = (
+            "skipped_actions",
+            "reconciled_actions",
+            "retryable_actions",
+            "manual_review_actions",
+        )
+        if decision.get("resume_status") in {"", "no-checkpoint"} and not any(decision.get(key) for key in action_fields):
+            return ""
+        lines = [
+            "Recovery decision:",
+            f"- Mode: {decision.get('mode', 'guarded_resume')}",
+            f"- Decision: {decision.get('decision', 'continue')}",
+            f"- Reason: {decision.get('reason', '-')}",
+        ]
+        for key, label in (
+            ("reconciled_actions", "Reconciled actions"),
+            ("retryable_actions", "Retryable actions"),
+            ("manual_review_actions", "Manual review actions"),
+        ):
+            values = list(decision.get(key, []) or [])
+            if values:
+                lines.append(f"- {label}: {', '.join(values)}")
+        return "\n".join(lines)
+
+    def maybe_inject_fault(self, stage):
+        if self._fault_injection_consumed or self.fault_injection != str(stage):
+            return
+        self._fault_injection_consumed = True
+        raise InjectedCrash(f"injected crash at {stage}")
 
     @staticmethod
     def remember(bucket, item, limit):
@@ -308,6 +364,7 @@ class Page:
     def _build_prompt_and_metadata(self, user_message):
         refresh = self.refresh_prefix()
         self.resume_state = self.evaluate_resume_state()
+        self.recovery_decision = self.action_journal.reconcile_all(self.resume_state.get("status", ""))
         prompt, metadata = self.context_manager.build(user_message)
         # 这里把“这轮 prompt 是怎么拼出来的”连同缓存相关状态一起记下来，
         # 后面 trace/report 才能解释清楚：为什么这一轮 prefix 变了、缓存有没有命中。
@@ -332,6 +389,7 @@ class Page:
                 "stale_summary_invalidations": int(self.resume_state.get("stale_summary_invalidations", 0)),
                 "stale_paths": list(self.resume_state.get("stale_paths", [])),
                 "runtime_identity_mismatch_fields": list(self.resume_state.get("runtime_identity_mismatch_fields", [])),
+                "recovery_decision": dict(self.recovery_decision),
             }
         )
         metadata.update(self.detected_secret_env_summary())
@@ -566,6 +624,8 @@ class Page:
             "durable_rejections": list(self.last_durable_rejections),
             "durable_superseded": list(self.last_durable_superseded),
             "redacted_env": self.detected_secret_env_summary(),
+            "action_journal": self.redact_artifact(self.action_journal.summary()),
+            "recovery_decision": self.redact_artifact(dict(self.recovery_decision)),
         }
 
     def tool_example(self, name):

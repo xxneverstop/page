@@ -23,3 +23,7 @@ include = ["page*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-p no:cacheprovider"
+markers = [
+  "slow: deterministic benchmark or ablation suites not required for the interview smoke test",
+]

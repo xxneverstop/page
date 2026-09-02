@@ -1,6 +1,7 @@
 """Security and redaction helpers for runtime artifacts."""
 
 import os
+from pathlib import Path
 
 SENSITIVE_ENV_NAME_MARKERS = ("API_KEY", "TOKEN", "SECRET", "PASSWORD")
 REDACTED_VALUE = "<redacted>"
@@ -97,4 +98,9 @@ def shell_env(env=None, allowlist=(), root="."):
     filtered["PWD"] = str(root)
     if "PATH" not in filtered and env.get("PATH"):
         filtered["PATH"] = env["PATH"]
+    if os.name == "nt":
+        system_root = env.get("SystemRoot") or env.get("SYSTEMROOT") or r"C:\Windows"
+        filtered.setdefault("SystemRoot", system_root)
+        filtered.setdefault("SYSTEMROOT", system_root)
+        filtered.setdefault("ComSpec", env.get("ComSpec") or env.get("COMSPEC") or str(Path(system_root) / "System32" / "cmd.exe"))
     return filtered

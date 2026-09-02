@@ -7,7 +7,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass
+
+from .features import memory as memorylib
 
 
 DEFAULT_TOTAL_BUDGET = 12000
@@ -25,9 +28,14 @@ DEFAULT_SECTION_FLOORS = {
 }
 # 当 prompt 超预算时，会优先压缩这些 section。
 DEFAULT_REDUCTION_ORDER = ("relevant_memory", "history", "memory", "prefix")
-SECTION_ORDER = ("prefix", "memory", "relevant_memory", "history", "current_request")
+RECOVERY_CONTEXT_SECTION = "recovery_context"
+SECTION_ORDER = ("prefix", RECOVERY_CONTEXT_SECTION, "memory", "relevant_memory", "history", "current_request")
 CURRENT_REQUEST_SECTION = "current_request"
 RELEVANT_MEMORY_LIMIT = 3
+
+
+class ProtectedContextOverflow(ValueError):
+    pass
 
 
 def _tail_clip(text, limit):
@@ -107,15 +115,26 @@ class ContextManager:
             context_reduction_enabled = self.agent.feature_enabled("context_reduction")
         section_texts = {
             "prefix": str(getattr(self.agent, "prefix", "")),
+            RECOVERY_CONTEXT_SECTION: "",
             "memory": "Memory:\n- disabled" if not memory_enabled else str(self.agent.memory_text()),
             "history": "",
             CURRENT_REQUEST_SECTION: f"Current user request:\n{user_message}",
         }
-        checkpoint_text = ""
+        protected_parts = []
         if hasattr(self.agent, "render_checkpoint_text"):
             checkpoint_text = str(self.agent.render_checkpoint_text() or "").strip()
-        if checkpoint_text:
-            section_texts["prefix"] = section_texts["prefix"] + "\n\n" + checkpoint_text
+            if checkpoint_text:
+                protected_parts.append(checkpoint_text)
+        if hasattr(self.agent, "render_recovery_text"):
+            recovery_text = str(self.agent.render_recovery_text() or "").strip()
+            if recovery_text:
+                protected_parts.append(recovery_text)
+        section_texts[RECOVERY_CONTEXT_SECTION] = "\n\n".join(protected_parts)
+        protected_chars = len(section_texts[RECOVERY_CONTEXT_SECTION]) + len(section_texts[CURRENT_REQUEST_SECTION])
+        if protected_chars > self.total_budget:
+            raise ProtectedContextOverflow(
+                f"protected_context_overflow: {protected_chars} protected chars exceed budget {self.total_budget}"
+            )
         selected_notes = []
         if memory_enabled and relevant_memory_enabled and hasattr(self.agent, "memory") and hasattr(self.agent.memory, "retrieval_candidates"):
             selected_notes = self.agent.memory.retrieval_candidates(user_message, limit=RELEVANT_MEMORY_LIMIT)
@@ -195,6 +214,12 @@ class ContextManager:
         history_raw = self._raw_history_text(history)
         return {
             "prefix": SectionRender(raw=section_texts["prefix"], budget=len(section_texts["prefix"]), rendered=section_texts["prefix"], details={}),
+            RECOVERY_CONTEXT_SECTION: SectionRender(
+                raw=section_texts[RECOVERY_CONTEXT_SECTION],
+                budget=0,
+                rendered=section_texts[RECOVERY_CONTEXT_SECTION],
+                details={"protected": True},
+            ),
             "memory": SectionRender(raw=section_texts["memory"], budget=len(section_texts["memory"]), rendered=section_texts["memory"], details={}),
             "relevant_memory": SectionRender(
                 raw=relevant_raw,
@@ -232,6 +257,9 @@ class ContextManager:
             if section == CURRENT_REQUEST_SECTION:
                 raw = section_texts[section]
                 rendered[section] = SectionRender(raw=raw, budget=0, rendered=raw, details={})
+            elif section == RECOVERY_CONTEXT_SECTION:
+                raw = section_texts[section]
+                rendered[section] = SectionRender(raw=raw, budget=0, rendered=raw, details={"protected": True})
             elif section == "relevant_memory":
                 rendered[section] = self._render_relevant_memory(selected_notes or [], int(budget or 0))
             elif section == "history":
@@ -368,10 +396,14 @@ class ContextManager:
             "collapsed_duplicate_reads": 0,
             "reused_file_summary_count": 0,
             "summarized_tool_count": 0,
+            "stale_tool_results_rejected": 0,
         }
 
         for index, item in enumerate(history):
             recent = index >= recent_start
+            if self._history_read_is_stale(item):
+                details["stale_tool_results_rejected"] += 1
+                continue
             if recent:
                 line_limit = 900
                 entries.append(
@@ -406,6 +438,17 @@ class ContextManager:
 
         return entries, details
 
+    def _history_read_is_stale(self, item):
+        if item.get("role") != "tool" or item.get("name") != "read_file":
+            return False
+        metadata = dict(item.get("metadata", {}) or {})
+        expected = metadata.get("source_hash")
+        if not expected:
+            return False
+        path = metadata.get("source_path") or item.get("args", {}).get("path", "")
+        current = memorylib.file_freshness(path, getattr(self.agent, "root", None))
+        return expected != current
+
     def _reusable_file_summary(self, path):
         memory = getattr(self.agent, "memory", None)
         if memory is None or not hasattr(memory, "to_dict"):
@@ -429,6 +472,8 @@ class ContextManager:
             return "Transcript:\n- empty"
         lines = []
         for item in history:
+            if self._history_read_is_stale(item):
+                continue
             if item["role"] == "tool":
                 lines.append(f"[tool:{item['name']}] {json.dumps(item['args'], sort_keys=True)}")
                 lines.append(str(item["content"]))
@@ -446,13 +491,9 @@ class ContextManager:
     def _assemble_prompt(self, rendered):
         # 顺序是刻意设计的：稳定规则放前面，最新请求放最后。
         return "\n\n".join(
-            [
-                rendered["prefix"].rendered,
-                rendered["memory"].rendered,
-                rendered["relevant_memory"].rendered,
-                rendered["history"].rendered,
-                rendered[CURRENT_REQUEST_SECTION].rendered,
-            ]
+            rendered[section].rendered
+            for section in SECTION_ORDER
+            if rendered[section].rendered
         ).strip()
 
     def _metadata(self, prompt, rendered, budgets, reduction_log, selected_notes, user_message, section_texts):
@@ -460,7 +501,7 @@ class ContextManager:
         for section in SECTION_ORDER[:-1]:
             section_metadata[section] = {
                 "raw_chars": rendered[section].raw_chars,
-                "budget_chars": int(budgets.get(section, 0)),
+                "budget_chars": None if section == RECOVERY_CONTEXT_SECTION else int(budgets.get(section, 0)),
                 "rendered_chars": rendered[section].rendered_chars,
             }
         section_metadata[CURRENT_REQUEST_SECTION] = {
@@ -474,7 +515,7 @@ class ContextManager:
             "prompt_over_budget": len(prompt) > self.total_budget,
             "section_order": list(SECTION_ORDER),
             "section_budgets": {
-                section: (None if section == CURRENT_REQUEST_SECTION else int(budgets.get(section, 0)))
+                section: (None if section in {CURRENT_REQUEST_SECTION, RECOVERY_CONTEXT_SECTION} else int(budgets.get(section, 0)))
                 for section in SECTION_ORDER
             },
             "sections": section_metadata,
@@ -501,6 +542,7 @@ class ContextManager:
                 "collapsed_duplicate_reads": int(rendered["history"].details.get("collapsed_duplicate_reads", 0)),
                 "reused_file_summary_count": int(rendered["history"].details.get("reused_file_summary_count", 0)),
                 "summarized_tool_count": int(rendered["history"].details.get("summarized_tool_count", 0)),
+                "stale_tool_results_rejected": int(rendered["history"].details.get("stale_tool_results_rejected", 0)),
             },
             "current_request": {
                 "text": user_message,
@@ -508,4 +550,41 @@ class ContextManager:
                 "rendered_chars": len(user_message),
                 "section_chars": len(rendered[CURRENT_REQUEST_SECTION].rendered),
             },
+            "context_blocks": self._context_blocks(rendered),
+            "protected_sections": [RECOVERY_CONTEXT_SECTION, CURRENT_REQUEST_SECTION],
+            "stale_rejected_paths": list(getattr(self.agent, "resume_state", {}).get("stale_paths", [])),
+            "token_estimate": max(1, (len(prompt) + 3) // 4),
+            "token_estimate_method": "chars_div_4",
         }
+
+    def _context_blocks(self, rendered):
+        blocks = []
+        stale_paths = list(getattr(self.agent, "resume_state", {}).get("stale_paths", []))
+        for section in SECTION_ORDER:
+            item = rendered[section]
+            protected = section in {RECOVERY_CONTEXT_SECTION, CURRENT_REQUEST_SECTION}
+            if not item.raw and not item.rendered:
+                decision = "drop"
+                reason = "empty section"
+            elif item.raw == item.rendered:
+                decision = "keep"
+                reason = "protected section" if protected else "within section budget"
+            else:
+                decision = "summarize"
+                reason = "section exceeded its assigned budget"
+            blocks.append(
+                {
+                    "block_id": f"context:{section}",
+                    "kind": section,
+                    "source": "runtime" if protected else section,
+                    "source_hash": "sha256:" + hashlib.sha256(item.raw.encode("utf-8")).hexdigest(),
+                    "priority": "protected" if protected else "normal",
+                    "protected": protected,
+                    "raw_chars": item.raw_chars,
+                    "rendered_chars": item.rendered_chars,
+                    "decision": decision,
+                    "decision_reason": reason,
+                    "stale_rejected_paths": stale_paths if section in {"memory", "relevant_memory", "history"} else [],
+                }
+            )
+        return blocks

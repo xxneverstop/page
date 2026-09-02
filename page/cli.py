@@ -10,6 +10,7 @@ import os
 import shutil
 import sys
 import textwrap
+import threading
 
 from .config import load_project_env, provider_env
 from .providers.clients import AnthropicCompatibleModelClient, OllamaModelClient, OpenAICompatibleModelClient
@@ -65,6 +66,59 @@ DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com/anthropic"
 DEFAULT_PROVIDER = "deepseek"
 PROVIDER_CHOICES = ("ollama", "openai", "anthropic", "deepseek")
 SECRET_ENV_NAMES_VAR = "PAGE_SECRET_ENV_NAMES"
+
+
+class _Spinner:
+    """Render a small terminal heartbeat while a synchronous agent turn is running."""
+
+    _FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+
+    def __init__(self, message="Working", *, stream=None, interval=0.08, enabled=None):
+        self.message = message
+        self.stream = stream or sys.stderr
+        self.interval = interval
+        self.enabled = self.stream.isatty() if enabled is None else enabled
+        self._stop = threading.Event()
+        self._thread = None
+
+    def _write(self, frame):
+        self.stream.write(f"\r\033[2m{frame} {self.message}\033[0m")
+        self.stream.flush()
+
+    def _animate(self):
+        index = 1
+        while not self._stop.wait(self.interval):
+            self._write(self._FRAMES[index % len(self._FRAMES)])
+            index += 1
+
+    def start(self):
+        if not self.enabled:
+            return self
+        self._stop.clear()
+        self._write(self._FRAMES[0])
+        self._thread = threading.Thread(target=self._animate, name="page-spinner", daemon=True)
+        self._thread.start()
+        return self
+
+    def stop(self):
+        if not self.enabled:
+            return
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=max(0.2, self.interval * 2))
+        self.stream.write("\r\033[2K")
+        self.stream.flush()
+
+    def __enter__(self):
+        return self.start()
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.stop()
+
+
+def _ask_with_progress(agent, prompt):
+    with _Spinner():
+        return agent.ask(prompt)
 
 
 def _effective_provider(args):
@@ -377,7 +431,7 @@ def main(argv=None):
         if prompt:
             print()
             try:
-                print(agent.ask(prompt))
+                print(_ask_with_progress(agent, prompt))
             except RuntimeError as exc:
                 print(f"\033[31m✖ {exc}\033[0m", file=sys.stderr)
                 return 1
@@ -418,7 +472,7 @@ def main(argv=None):
 
         print()
         try:
-            response = agent.ask(user_input)
+            response = _ask_with_progress(agent, user_input)
             print(response)
             _print_turn_meta(agent)
         except KeyboardInterrupt:

@@ -155,6 +155,8 @@ def create_checkpoint(agent, task_state, user_message, trigger):
     checkpoint = {
         "checkpoint_id": checkpoint_id,
         "parent_checkpoint_id": current.get("checkpoint_id", "") if current else "",
+        "run_id": task_state.run_id,
+        "task_id": task_state.task_id,
         "schema_version": CHECKPOINT_SCHEMA_VERSION,
         "created_at": now(),
         "current_goal": str(user_message),
@@ -166,6 +168,7 @@ def create_checkpoint(agent, task_state, user_message, trigger):
         "freshness": freshness,
         "summary": f"{trigger}: {clip(str(user_message), 120)}",
         "runtime_identity": current_runtime_identity(agent),
+        "action_ids": sorted(agent.action_journal.state.get("items", {}).keys()) if hasattr(agent, "action_journal") else [],
     }
     state["items"][checkpoint_id] = checkpoint
     state["current_id"] = checkpoint_id

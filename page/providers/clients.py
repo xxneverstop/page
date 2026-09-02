@@ -215,10 +215,13 @@ def _extract_usage_cache_details(data):
     output_tokens = usage.get("output_tokens", usage.get("completion_tokens"))
     input_details = usage.get("input_tokens_details") or usage.get("prompt_tokens_details") or {}
     cached_tokens = int(input_details.get("cached_tokens") or 0)
+    total_tokens = usage.get("total_tokens")
+    if total_tokens is None and isinstance(input_tokens, int) and isinstance(output_tokens, int):
+        total_tokens = input_tokens + output_tokens
     return {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
-        "total_tokens": usage.get("total_tokens"),
+        "total_tokens": total_tokens,
         "cached_tokens": cached_tokens,
         "cache_hit": cached_tokens > 0,
     }
@@ -410,11 +413,11 @@ class AnthropicCompatibleModelClient:
             method="POST",
         )
         attempts = 3
+        last_content_types = []
         for attempt in range(attempts):
             try:
                 with urllib.request.urlopen(request, timeout=self.timeout) as response:
                     body_text = response.read().decode("utf-8")
-                break
             except urllib.error.HTTPError as exc:
                 body = exc.read().decode("utf-8", errors="replace")
                 if exc.code >= 500 and attempt < attempts - 1:
@@ -430,21 +433,31 @@ class AnthropicCompatibleModelClient:
                     f"Base URL: {self.base_url}\n"
                     f"Model: {self.model}"
                 ) from exc
-
-        try:
-            data = json.loads(body_text)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(
-                "Anthropic-compatible error: backend returned non-JSON content that could not be parsed"
-            ) from exc
-        if data.get("error"):
-            raise RuntimeError(f"Anthropic-compatible error: {data['error']}")
-        text = _extract_anthropic_text(data)
-        if text:
-            return text
-
-        import pprint
-        print("[DEBUG] _extract_anthropic_text returned empty. Raw content blocks:")
-        pprint.pprint(data.get("content", []))
-
-        raise RuntimeError("Anthropic-compatible error: could not extract text from response")
+            try:
+                data = json.loads(body_text)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    "Anthropic-compatible error: backend returned non-JSON content that could not be parsed"
+                ) from exc
+            if data.get("error"):
+                raise RuntimeError(f"Anthropic-compatible error: {data['error']}")
+            self.last_completion_metadata = {
+                "prompt_cache_supported": False,
+                **_extract_usage_cache_details(data),
+            }
+            text = _extract_anthropic_text(data)
+            if text:
+                return text
+            last_content_types = [
+                str(item.get("type", "unknown"))
+                for item in data.get("content", [])
+                if isinstance(item, dict)
+            ]
+            if attempt < attempts - 1:
+                time.sleep(0.5 * (attempt + 1))
+                continue
+        types = ",".join(last_content_types) or "none"
+        raise RuntimeError(
+            "Anthropic-compatible error: response contained no final text "
+            f"after {attempts} attempts (content types: {types})"
+        )

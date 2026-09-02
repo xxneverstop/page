@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 import re
 
+from .action_journal import InjectedCrash
+from .features import memory as memorylib
 from .workspace import clip
 
 
@@ -67,6 +69,45 @@ class ToolExecutor:
                 ),
             )
 
+        journaled = name in {"write_file", "patch_file", "run_shell"}
+        preflight = agent.action_journal.preflight(name, args) if journaled else None
+        if preflight and preflight["decision"] == "skip":
+            record = dict(preflight.get("record") or {})
+            return ToolExecutionResult(
+                content=f"reconciled: action {preflight['action_id']} was already applied; skipped duplicate execution",
+                metadata={
+                    **_metadata(
+                        "ok",
+                        risk_level="high" if tool["risky"] else "low",
+                        read_only=not tool["risky"],
+                        affected_paths=record.get("affected_paths", []),
+                        workspace_changed=False,
+                        workspace_fingerprint=agent.workspace.fingerprint(),
+                    ),
+                    "action_id": preflight["action_id"],
+                    "action_phase": record.get("phase", "reconciled"),
+                    "recovery_action": "skipped_duplicate",
+                },
+            )
+        if preflight and preflight["decision"] == "manual-review":
+            record = dict(preflight.get("record") or {})
+            return ToolExecutionResult(
+                content=f"error: action {preflight['action_id']} requires manual review before retry",
+                metadata={
+                    **_metadata(
+                        "rejected",
+                        tool_error_code="manual_review_required",
+                        security_event_type="uncertain_side_effect",
+                        risk_level="high",
+                        read_only=False,
+                        affected_paths=record.get("affected_paths", []),
+                    ),
+                    "action_id": preflight["action_id"],
+                    "action_phase": record.get("phase", "manual-review-required"),
+                    "recovery_action": "manual_review",
+                },
+            )
+
         try:
             agent.validate_tool(name, args)
         except Exception as exc:
@@ -87,6 +128,30 @@ class ToolExecutor:
             )
 
         if agent.repeated_tool_call(name, args):
+            if name == "read_file":
+                cached = next(
+                    (
+                        item.get("content", "")
+                        for item in reversed(agent.session.get("history", []))
+                        if item.get("role") == "tool" and item.get("name") == name and item.get("args") == args
+                    ),
+                    "",
+                )
+                if cached:
+                    source_hash = memorylib.file_freshness(args.get("path", ""), agent.root)
+                    return ToolExecutionResult(
+                        content=(
+                            "cached verified read; do not repeat the same read again. "
+                            "Use the result below and return a final answer.\n" + str(cached)
+                        ),
+                        metadata={
+                            **_metadata("ok", risk_level="low", read_only=True),
+                            "deduplicated_read": True,
+                            "recovery_action": "cached_read",
+                            "source_path": agent.memory.canonical_path(args.get("path", "")),
+                            "source_hash": source_hash,
+                        },
+                    )
             return ToolExecutionResult(
                 content=f"error: repeated identical tool call for {name}; choose a different tool or return a final answer",
                 metadata=_metadata(
@@ -111,7 +176,9 @@ class ToolExecutor:
 
         before_snapshot = agent.capture_workspace_snapshot() if tool["risky"] else {}
         after_snapshot = before_snapshot
+        action_record = agent.action_journal.begin(name, args, agent.current_task_state) if journaled else None
         try:
+            agent.maybe_inject_fault("before_tool_execution")
             content = clip(tool["run"](args))
             after_snapshot = agent.capture_workspace_snapshot() if tool["risky"] else before_snapshot
             affected_paths, diff_summary = agent.diff_workspace_snapshots(before_snapshot, after_snapshot)
@@ -127,6 +194,9 @@ class ToolExecutor:
                 elif exit_code != 0:
                     tool_status = "error"
                     tool_error_code = "tool_failed"
+            agent.maybe_inject_fault("after_tool_execution_before_commit")
+            if action_record is not None:
+                agent.action_journal.finish(action_record, tool_status, tool_error_code)
             agent.update_memory_after_tool(name, args, content)
             metadata = _metadata(
                 tool_status,
@@ -138,8 +208,21 @@ class ToolExecutor:
                 workspace_fingerprint=agent.workspace.fingerprint(),
                 diff_summary=diff_summary,
             )
+            if action_record is not None:
+                metadata.update(
+                    {
+                        "action_id": action_record["action_id"],
+                        "action_phase": action_record["phase"],
+                        "recovery_action": action_record.get("recovery_decision", ""),
+                    }
+                )
+            if name == "read_file":
+                metadata["source_path"] = agent.memory.canonical_path(args.get("path", ""))
+                metadata["source_hash"] = memorylib.file_freshness(args.get("path", ""), agent.root)
             agent.record_process_note_for_tool(name, metadata)
             return ToolExecutionResult(content=content, metadata=metadata)
+        except InjectedCrash:
+            raise
         except Exception as exc:
             after_snapshot = agent.capture_workspace_snapshot() if tool["risky"] else before_snapshot
             affected_paths, diff_summary = agent.diff_workspace_snapshots(before_snapshot, after_snapshot)
@@ -156,5 +239,14 @@ class ToolExecutor:
                 workspace_fingerprint=agent.workspace.fingerprint(),
                 diff_summary=diff_summary,
             )
+            if action_record is not None:
+                agent.action_journal.finish(action_record, metadata["tool_status"], metadata["tool_error_code"])
+                metadata.update(
+                    {
+                        "action_id": action_record["action_id"],
+                        "action_phase": action_record["phase"],
+                        "recovery_action": action_record.get("recovery_decision", ""),
+                    }
+                )
             agent.record_process_note_for_tool(name, metadata)
             return ToolExecutionResult(content=f"error: tool {name} failed: {exc}", metadata=metadata)

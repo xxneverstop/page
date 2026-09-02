@@ -1,12 +1,14 @@
 import hashlib
 import json
 import locale as locale_module
+import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..features import memory as memorylib
 from ..providers.clients import FakeModelClient
@@ -127,7 +129,15 @@ def _current_locale():
 
 
 def _now_in_timezone(timezone_name):
-    return datetime.now(ZoneInfo(timezone_name)).strftime("%Y-%m-%dT%H:%M:%S%z")
+    try:
+        zone = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        if timezone_name != "Asia/Shanghai":
+            raise
+        # Windows does not ship the IANA tz database. Shanghai has used UTC+8
+        # without daylight-saving transitions throughout the experiment range.
+        zone = timezone(timedelta(hours=8), name="Asia/Shanghai")
+    return datetime.now(zone).strftime("%Y-%m-%dT%H:%M:%S%z")
 
 
 def _artifact_path_for_task(task):
@@ -139,6 +149,29 @@ def _artifact_path_for_task(task):
 
 def _workspace_relative(path, workspace_root):
     return str(Path(path).resolve().relative_to(Path(workspace_root).resolve()))
+
+
+def _run_verifier(command, cwd):
+    """Run Python verifiers without relying on POSIX shell quoting."""
+    command = str(command).strip()
+    try:
+        parts = shlex.split(command, posix=True)
+    except ValueError:
+        parts = []
+    if len(parts) >= 3 and parts[0].lower() in {"python", "python3", "py"} and parts[1] == "-c":
+        return subprocess.run(
+            [sys.executable, "-c", parts[2]],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+    return subprocess.run(
+        command,
+        cwd=cwd,
+        shell=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _scripted_outputs_for_task(task):
@@ -489,13 +522,7 @@ class BenchmarkEvaluator:
         expected_artifact_exists = artifact_file.exists()
         artifact_digest = _digest_file(artifact_file) if expected_artifact_exists else ""
 
-        verifier = subprocess.run(
-            task["verifier"],
-            cwd=fixture_copy_root,
-            shell=True,
-            capture_output=True,
-            text=True,
-        )
+        verifier = _run_verifier(task["verifier"], cwd=fixture_copy_root)
 
         within_budget = task_state.tool_steps <= int(task["step_budget"])
         verifier_passed = verifier.returncode == 0

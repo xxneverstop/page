@@ -1,5 +1,7 @@
 from page import FakeModelClient, Page, SessionStore, WorkspaceContext
-from page.context_manager import ContextManager
+import pytest
+
+from page.context_manager import ContextManager, ProtectedContextOverflow
 
 
 def build_workspace(tmp_path):
@@ -33,7 +35,14 @@ def test_context_manager_assembles_sections_in_expected_order(tmp_path):
     assert prompt.index("Relevant memory:") < prompt.index("Transcript:")
     assert prompt.index("Transcript:") < prompt.index("Current user request:")
     assert prompt.rstrip().endswith("Current user request:\nWhere is the deploy key?")
-    assert metadata["section_order"] == ["prefix", "memory", "relevant_memory", "history", "current_request"]
+    assert metadata["section_order"] == [
+        "prefix",
+        "recovery_context",
+        "memory",
+        "relevant_memory",
+        "history",
+        "current_request",
+    ]
 
 
 def test_context_manager_reduces_relevant_memory_before_history_and_preserves_newer_context(tmp_path):
@@ -237,3 +246,68 @@ def test_context_manager_relevant_memory_can_mix_durable_notes(tmp_path):
     assert metadata["relevant_memory"]["selected_durable_count"] == 1
     assert metadata["relevant_memory"]["selected_sources"] == ["project-conventions"]
     assert metadata["relevant_memory"]["selected_kinds"] == ["durable"]
+
+
+def test_context_blocks_explain_protection_and_reduction(tmp_path):
+    agent = build_agent(tmp_path, [])
+    agent.prefix = "PREFIX " + ("A" * 400)
+
+    prompt, metadata = ContextManager(
+        agent,
+        total_budget=300,
+        section_budgets={"prefix": 80, "memory": 60, "relevant_memory": 60, "history": 60},
+    ).build("keep this request")
+
+    blocks = {item["kind"]: item for item in metadata["context_blocks"]}
+    assert blocks["current_request"]["protected"] is True
+    assert blocks["current_request"]["decision"] == "keep"
+    assert blocks["prefix"]["decision"] == "summarize"
+    assert blocks["prefix"]["source_hash"].startswith("sha256:")
+    assert metadata["token_estimate_method"] == "chars_div_4"
+    assert prompt.endswith("Current user request:\nkeep this request")
+
+
+def test_protected_context_overflow_fails_explicitly(tmp_path):
+    agent = build_agent(tmp_path, [])
+
+    with pytest.raises(ProtectedContextOverflow, match="protected_context_overflow"):
+        ContextManager(agent, total_budget=50).build("X" * 100)
+
+
+def test_stale_file_summary_is_rejected_before_prompt(tmp_path):
+    file_path = tmp_path / "sample.txt"
+    file_path.write_text("alpha\n", encoding="utf-8")
+    agent = build_agent(tmp_path, [])
+    agent.memory.set_file_summary("sample.txt", "cached alpha")
+    agent.memory.remember_file("sample.txt")
+    agent.session["memory"] = agent.memory.to_dict()
+    agent.session_store.save(agent.session)
+    file_path.write_text("beta\n", encoding="utf-8")
+
+    prompt, metadata = agent._build_prompt_and_metadata("inspect sample")
+
+    assert "cached alpha" not in prompt
+    assert "sample.txt" in metadata["stale_rejected_paths"]
+    memory_block = next(item for item in metadata["context_blocks"] if item["kind"] == "memory")
+    assert "sample.txt" in memory_block["stale_rejected_paths"]
+
+
+def test_stale_read_tool_result_is_removed_from_history(tmp_path):
+    file_path = tmp_path / "state.txt"
+    file_path.write_text("alpha-state\n", encoding="utf-8")
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"read_file","args":{"path":"state.txt","start":1,"end":20}}</tool>',
+            "<final>alpha-state</final>",
+        ],
+    )
+    agent.ask("Read state.txt")
+    read_event = next(item for item in agent.session["history"] if item.get("name") == "read_file")
+    assert read_event["metadata"]["source_hash"]
+    file_path.write_text("beta-state\n", encoding="utf-8")
+
+    prompt, metadata = agent._build_prompt_and_metadata("What is the current state?")
+
+    assert "# state.txt\n   1: alpha-state" not in prompt
+    assert metadata["history"]["stale_tool_results_rejected"] == 1

@@ -53,6 +53,26 @@ def test_agent_runs_tool_then_final(tmp_path):
     assert "hello.txt" in agent.session["memory"]["files"]
 
 
+def test_agent_gets_a_finalization_turn_after_using_the_tool_budget(tmp_path):
+    (tmp_path / "hello.txt").write_text("alpha\n", encoding="utf-8")
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"read_file","args":{"path":"hello.txt","start":1,"end":1}}</tool>',
+            "<final>The file contains alpha.</final>",
+        ],
+        max_steps=1,
+    )
+
+    answer = agent.ask("Inspect hello.txt")
+
+    assert answer == "The file contains alpha."
+    assert agent.current_task_state.status == "completed"
+    assert agent.current_task_state.tool_steps == 1
+    assert agent.current_task_state.attempts == 2
+    assert "FINALIZATION PHASE" in agent.model_client.prompts[-1]
+
+
 def test_agent_updates_task_summary_on_each_request(tmp_path):
     agent = build_agent(
         tmp_path,
@@ -988,11 +1008,12 @@ def test_successful_run_persists_run_artifacts_and_stop_reason(tmp_path):
 
 def test_trace_and_report_redact_secret_env_values(tmp_path):
     secret = "sk-test-secret-123"
+    command = subprocess.list2cmdline([sys.executable, "-c", f"print({secret!r})"])
     with patch.dict(os.environ, {"OPENAI_API_KEY": secret}, clear=True):
         agent = build_agent(
             tmp_path,
             [
-                '<tool>{"name":"run_shell","args":{"command":"printf \'%s\' \'sk-test-secret-123\'","timeout":20}}</tool>',
+                "<tool>" + json.dumps({"name": "run_shell", "args": {"command": command, "timeout": 20}}) + "</tool>",
                 "<final>Masked.</final>",
             ],
         )

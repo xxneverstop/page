@@ -7,6 +7,8 @@
 import shutil
 import subprocess
 import textwrap
+import os
+from pathlib import Path
 from functools import partial
 
 from .workspace import IGNORED_PATH_NAMES
@@ -217,16 +219,21 @@ def tool_run_shell(context, args):
     timeout = int(args.get("timeout", 20))
     if timeout < 1 or timeout > 120:
         raise ValueError("timeout must be in [1, 120]")
+    filtered_env = context.shell_env()
+    shell_executable = None
+    if os.name == "nt":
+        shell_executable = filtered_env.get("ComSpec") or str(Path(filtered_env.get("SystemRoot", r"C:\Windows")) / "System32" / "cmd.exe")
     result = subprocess.run(
         command,
         cwd=context.root,
         shell=True,
+        executable=shell_executable,
         capture_output=True,
         text=True,
         timeout=timeout,
         # 这里传入的是过滤后的环境变量，而不是直接继承整个父 shell 环境，
         # 目的是减少敏感信息被意外带进命令执行环境的风险。
-        env=context.shell_env(),
+        env=filtered_env,
     )
     return textwrap.dedent(
         f"""\
@@ -243,7 +250,9 @@ def tool_write_file(context, args):
     path = context.path(args["path"])
     content = str(args["content"])
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
+    # Keep model-provided newlines byte-stable across Windows and POSIX so
+    # recovery postcondition hashes describe the exact persisted content.
+    path.write_text(content, encoding="utf-8", newline="")
     return f"wrote {path.relative_to(context.root)} ({len(content)} chars)"
 
 
@@ -260,7 +269,7 @@ def tool_patch_file(context, args):
     count = text.count(old_text)
     if count != 1:
         raise ValueError(f"old_text must occur exactly once, found {count}")
-    path.write_text(text.replace(old_text, str(args["new_text"]), 1), encoding="utf-8")
+    path.write_text(text.replace(old_text, str(args["new_text"]), 1), encoding="utf-8", newline="")
     return f"patched {path.relative_to(context.root)}"
 
 

@@ -22,6 +22,7 @@ STOP_REASON_APPROVAL_DENIED = "approval_denied"
 STOP_REASON_DELEGATE_FAILED = "delegate_failed"
 STOP_REASON_PERSISTENCE_ERROR = "persistence_error"
 STOP_REASON_RESUME_LOAD_ERROR = "resume_load_error"
+STOP_REASON_CONTEXT_OVERFLOW = "protected_context_overflow"
 
 
 @dataclass
@@ -87,6 +88,9 @@ class TaskState:
 
     def stop_model_error(self, final_answer=""):
         return self.stop(STOP_REASON_MODEL_ERROR, status=STATUS_FAILED, final_answer=final_answer)
+
+    def stop_context_overflow(self, final_answer=""):
+        return self.stop(STOP_REASON_CONTEXT_OVERFLOW, status=STATUS_FAILED, final_answer=final_answer)
 
     def finish_success(self, final_answer):
         self.status = STATUS_COMPLETED

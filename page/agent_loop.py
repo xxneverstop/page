@@ -3,6 +3,7 @@
 import time
 
 from .checkpoint import CHECKPOINT_NONE_STATUS, CHECKPOINT_PARTIAL_STALE_STATUS, CHECKPOINT_WORKSPACE_MISMATCH_STATUS
+from .context_manager import ProtectedContextOverflow
 from .task_state import TaskState
 from .workspace import clip, now
 
@@ -29,10 +30,16 @@ class AgentLoop:
                 "user_request": clip(user_message, 300),
             },
         )
+        agent.emit_trace(
+            task_state,
+            "recovery_reconciled",
+            dict(getattr(agent, "recovery_decision", {}) or {}),
+        )
 
         tool_steps = 0
         attempts = 0
         max_attempts = max(agent.max_steps * 3, agent.max_steps + 4)
+        finalization_attempted = False
 
         # 这是 agent 的主循环，可以按“感知 -> 决策 -> 行动 -> 记录”来理解：
         # 1. 感知：重新组 prompt，把当前状态整理给模型看
@@ -40,12 +47,63 @@ class AgentLoop:
         # 3. 行动：如果是工具调用，就执行工具
         # 4. 记录：把结果写回 history / task_state / trace / memory
         # 然后进入下一轮，直到停机条件满足
-        while tool_steps < agent.max_steps and attempts < max_attempts:
+        # max_steps is the tool budget, not the answer budget.  After the last
+        # tool result, give the model one synthesis-only turn so useful evidence
+        # is not discarded just because every tool slot was used.
+        while attempts < max_attempts and (tool_steps < agent.max_steps or not finalization_attempted):
+            finalizing = tool_steps >= agent.max_steps
+            if finalizing:
+                finalization_attempted = True
             attempts += 1
             task_state.record_attempt()
             agent.run_store.write_task_state(task_state)
             prompt_started_at = time.monotonic()
-            prompt, prompt_metadata = agent._build_prompt_and_metadata(user_message)
+            try:
+                prompt, prompt_metadata = agent._build_prompt_and_metadata(user_message)
+                if finalizing:
+                    prompt += (
+                        "\n\nFINALIZATION PHASE:\n"
+                        "The tool-call budget is exhausted. Do not request or call another tool. "
+                        "Return the best answer supported by the evidence already collected, wrapped "
+                        "in <final>...</final>. If something is missing, state the blocking fact and "
+                        "the next concrete action instead of attempting another tool call."
+                    )
+                    prompt_metadata["finalization_only"] = True
+                    agent.emit_trace(
+                        task_state,
+                        "finalization_requested",
+                        {
+                            "attempts": task_state.attempts,
+                            "tool_steps": task_state.tool_steps,
+                        },
+                    )
+            except ProtectedContextOverflow as exc:
+                final = "Stopped because protected context exceeds the configured prompt budget."
+                task_state.stop_context_overflow(final)
+                agent.run_store.write_task_state(task_state)
+                agent.emit_trace(
+                    task_state,
+                    "context_failed",
+                    {"error_code": "protected_context_overflow", "error": str(exc)},
+                )
+                checkpoint = agent.create_checkpoint(task_state, user_message, trigger="protected_context_overflow")
+                agent.emit_trace(
+                    task_state,
+                    "checkpoint_created",
+                    {"checkpoint_id": checkpoint["checkpoint_id"], "trigger": "protected_context_overflow"},
+                )
+                agent.emit_trace(
+                    task_state,
+                    "run_finished",
+                    {
+                        "status": task_state.status,
+                        "stop_reason": task_state.stop_reason,
+                        "final_answer": final,
+                        "run_duration_ms": int((time.monotonic() - run_started_at) * 1000),
+                    },
+                )
+                agent.run_store.write_report(task_state, agent.redact_artifact(agent.build_report(task_state)))
+                return final
             agent.emit_trace(
                 task_state,
                 "prompt_built",
@@ -110,12 +168,44 @@ class AgentLoop:
                 prompt_cache_key = prompt_metadata.get("prompt_cache_key")
                 prompt_cache_retention = "in_memory"
             model_started_at = time.monotonic()
-            raw = agent.model_client.complete(
-                prompt,
-                agent.max_new_tokens,
-                prompt_cache_key=prompt_cache_key,
-                prompt_cache_retention=prompt_cache_retention,
-            )
+            try:
+                raw = agent.model_client.complete(
+                    prompt,
+                    agent.max_new_tokens,
+                    prompt_cache_key=prompt_cache_key,
+                    prompt_cache_retention=prompt_cache_retention,
+                )
+            except Exception as exc:
+                final = f"Stopped because the model request failed: {type(exc).__name__}."
+                task_state.stop_model_error(final)
+                agent.run_store.write_task_state(task_state)
+                agent.emit_trace(
+                    task_state,
+                    "model_failed",
+                    {
+                        "error_type": type(exc).__name__,
+                        "error": agent.redact_text(str(exc)),
+                        "duration_ms": int((time.monotonic() - model_started_at) * 1000),
+                    },
+                )
+                checkpoint = agent.create_checkpoint(task_state, user_message, trigger="model_error")
+                agent.emit_trace(
+                    task_state,
+                    "checkpoint_created",
+                    {"checkpoint_id": checkpoint["checkpoint_id"], "trigger": "model_error"},
+                )
+                agent.emit_trace(
+                    task_state,
+                    "run_finished",
+                    {
+                        "status": task_state.status,
+                        "stop_reason": task_state.stop_reason,
+                        "final_answer": final,
+                        "run_duration_ms": int((time.monotonic() - run_started_at) * 1000),
+                    },
+                )
+                agent.run_store.write_report(task_state, agent.redact_artifact(agent.build_report(task_state)))
+                return final
             completion_metadata = dict(getattr(agent.model_client, "last_completion_metadata", {}) or {})
             if completion_metadata:
                 # 把后端返回的 usage/cache 统计并回 prompt_metadata，
@@ -129,12 +219,16 @@ class AgentLoop:
                 "model_parsed",
                 {
                     "kind": kind,
+                    "tool_name": payload.get("name", "") if kind == "tool" and isinstance(payload, dict) else "",
+                    "answer_preview": agent.redact_text(clip(payload, 120)) if kind == "final" else "",
                     "completion_metadata": completion_metadata,
                     "duration_ms": int((time.monotonic() - model_started_at) * 1000),
                 },
             )
 
             if kind == "tool":
+                if finalizing:
+                    break
                 tool_steps += 1
                 name = payload.get("name", "")
                 args = payload.get("args", {})
@@ -148,6 +242,7 @@ class AgentLoop:
                         "name": name,
                         "args": args,
                         "content": result,
+                        "metadata": dict(tool_result.metadata or {}),
                         "created_at": now(),
                     }
                 )
@@ -178,6 +273,8 @@ class AgentLoop:
             if kind == "retry":
                 agent.record({"role": "assistant", "content": payload, "created_at": now()})
                 agent.run_store.write_task_state(task_state)
+                if finalizing:
+                    break
                 continue
 
             final = (payload or raw).strip()
@@ -194,6 +291,7 @@ class AgentLoop:
                     "trigger": "run_finished",
                 },
             )
+            agent.maybe_inject_fault("after_checkpoint_before_final")
             agent.emit_trace(
                 task_state,
                 "run_finished",

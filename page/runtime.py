@@ -19,6 +19,7 @@ from . import security as securitylib
 from .context_manager import ContextManager
 from .checkpoint import CHECKPOINT_NONE_STATUS
 from .prompt_prefix import build_prompt_prefix, tool_signature
+from .providers.tool_calling import ModelResponse, ToolObservation, neutral_tool_definitions
 from .run_store import RunStore
 from .security import REDACTED_VALUE
 from .session_store import SessionStore
@@ -69,6 +70,7 @@ class Page:
         secret_env_names=None,
         feature_flags=None,
         allowed_tools=None,
+        tool_protocol="text",
         resume_mode="guarded",
         fault_injection=None,
     ):
@@ -88,6 +90,9 @@ class Page:
         if feature_flags:
             self.feature_flags.update({str(key): bool(value) for key, value in feature_flags.items()})
         self.allowed_tools = self._normalize_allowed_tools(allowed_tools)
+        self.tool_protocol = str(tool_protocol or "text").strip().lower()
+        if self.tool_protocol not in {"text", "native"}:
+            raise ValueError("tool_protocol must be 'text' or 'native'")
         self.resume_mode = str(resume_mode or "guarded").strip().lower()
         if self.resume_mode not in {"guarded", "blind"}:
             raise ValueError("resume_mode must be 'guarded' or 'blind'")
@@ -157,6 +162,9 @@ class Page:
         journal = self.session.setdefault("action_journal", {})
         if not isinstance(journal, dict):
             self.session["action_journal"] = {}
+        native_state = self.session.setdefault("native_tool_state", {})
+        if not isinstance(native_state, dict):
+            self.session["native_tool_state"] = {}
 
     def current_runtime_identity(self):
         return checkpointlib.current_runtime_identity(self)
@@ -260,7 +268,49 @@ class Page:
         return tool_signature(self.tools)
 
     def build_prefix(self):
-        return build_prompt_prefix(workspace=self.workspace, tools=self.tools)
+        return build_prompt_prefix(
+            workspace=self.workspace,
+            tools=self.tools,
+            tool_protocol=self.tool_protocol,
+        )
+
+    def model_request_kwargs(self):
+        if self.tool_protocol != "native":
+            return {}
+        state = dict(self.session.get("native_tool_state", {}) or {})
+        return {
+            "tools": neutral_tool_definitions(self.tools),
+            "observations": list(state.get("observations", []) or []),
+            "continuation": dict(state.get("continuation", {}) or {}),
+        }
+
+    def accept_model_response(self, response):
+        if self.tool_protocol != "native" or not isinstance(response, ModelResponse):
+            return
+        self.session["native_tool_state"] = {
+            "continuation": dict(response.continuation or {}),
+            "observations": [],
+        }
+        self.session_path = self.session_store.save(self.session)
+
+    def record_native_tool_observation(self, call_id, name, content, is_error=False):
+        if self.tool_protocol != "native":
+            return
+        state = self.session.setdefault("native_tool_state", {})
+        state["observations"] = [
+            ToolObservation(
+                call_id=str(call_id or ""),
+                name=str(name or ""),
+                content=str(content),
+                is_error=bool(is_error),
+            ).to_dict()
+        ]
+        self.session_path = self.session_store.save(self.session)
+
+    def clear_native_tool_state(self):
+        if self.session.get("native_tool_state"):
+            self.session["native_tool_state"] = {}
+            self.session_path = self.session_store.save(self.session)
 
     def _apply_prefix_state(self, prefix_state):
         self.prefix_state = prefix_state
@@ -626,6 +676,10 @@ class Page:
             "redacted_env": self.detected_secret_env_summary(),
             "action_journal": self.redact_artifact(self.action_journal.summary()),
             "recovery_decision": self.redact_artifact(dict(self.recovery_decision)),
+            "tool_protocol": self.tool_protocol,
+            "tool_signature": self.tool_signature(),
+            "provider": getattr(self.model_client, "provider_name", type(self.model_client).__name__),
+            "model": getattr(self.model_client, "model", ""),
         }
 
     def tool_example(self, name):
@@ -660,6 +714,7 @@ class Page:
             read_only=True,
             secret_env_names=self.secret_env_names,
             shell_env_allowlist=self.shell_env_allowlist,
+            tool_protocol=self.tool_protocol,
         )
         # 委派的目标是“调查”，不是“放权执行”。
         # 子 agent 以只读方式运行、步数更少，最后只把结论文本返回给父 agent。
@@ -753,6 +808,27 @@ class Page:
             return "final", raw
         return "retry", Page.retry_notice("model returned an empty response")
 
+    def parse_model_response(self, raw):
+        if not isinstance(raw, ModelResponse):
+            return self.parse(raw)
+        if len(raw.tool_calls) > 1:
+            return "retry", self.retry_notice("parallel tool calls are not supported")
+        if raw.tool_calls:
+            call = raw.tool_calls[0]
+            if not call.name:
+                return "retry", self.retry_notice("native tool call is missing a tool name")
+            if not call.call_id:
+                return "retry", self.retry_notice("native tool call is missing a call id")
+            return "tool", {
+                "name": call.name,
+                "args": dict(call.arguments),
+                "call_id": call.call_id,
+            }
+        text = str(raw.text or "").strip()
+        if text:
+            return self.parse(text)
+        return "retry", self.retry_notice("native response contained neither a tool call nor text")
+
     @staticmethod
     def retry_notice(problem=None):
         prefix = "Runtime notice"
@@ -823,6 +899,7 @@ class Page:
 
     def reset(self):
         self.session["history"] = []
+        self.session["native_tool_state"] = {}
         self.session["memory"].clear()
         self.session["memory"].update(memorylib.default_memory_state())
         self.memory = memorylib.LayeredMemory(self.session["memory"], workspace_root=self.root)

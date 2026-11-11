@@ -61,11 +61,16 @@ class AgentLoop:
             try:
                 prompt, prompt_metadata = agent._build_prompt_and_metadata(user_message)
                 if finalizing:
+                    final_format = (
+                        "as normal text"
+                        if agent.tool_protocol == "native"
+                        else "wrapped in <final>...</final>"
+                    )
                     prompt += (
                         "\n\nFINALIZATION PHASE:\n"
                         "The tool-call budget is exhausted. Do not request or call another tool. "
-                        "Return the best answer supported by the evidence already collected, wrapped "
-                        "in <final>...</final>. If something is missing, state the blocking fact and "
+                        "Return the best answer supported by the evidence already collected, "
+                        f"{final_format}. If something is missing, state the blocking fact and "
                         "the next concrete action instead of attempting another tool call."
                     )
                     prompt_metadata["finalization_only"] = True
@@ -174,6 +179,7 @@ class AgentLoop:
                     agent.max_new_tokens,
                     prompt_cache_key=prompt_cache_key,
                     prompt_cache_retention=prompt_cache_retention,
+                    **agent.model_request_kwargs(),
                 )
             except Exception as exc:
                 final = f"Stopped because the model request failed: {type(exc).__name__}."
@@ -206,14 +212,17 @@ class AgentLoop:
                 )
                 agent.run_store.write_report(task_state, agent.redact_artifact(agent.build_report(task_state)))
                 return final
+            agent.accept_model_response(raw)
             completion_metadata = dict(getattr(agent.model_client, "last_completion_metadata", {}) or {})
+            response_metadata = dict(getattr(raw, "metadata", {}) or {})
+            completion_metadata.update(response_metadata)
             if completion_metadata:
                 # 把后端返回的 usage/cache 统计并回 prompt_metadata，
                 # 方便统一写入 report 和 trace。
                 prompt_metadata.update(completion_metadata)
             agent.last_completion_metadata = completion_metadata
             agent.last_prompt_metadata = prompt_metadata
-            kind, payload = agent.parse(raw)
+            kind, payload = agent.parse_model_response(raw)
             agent.emit_trace(
                 task_state,
                 "model_parsed",
@@ -232,6 +241,7 @@ class AgentLoop:
                 tool_steps += 1
                 name = payload.get("name", "")
                 args = payload.get("args", {})
+                call_id = str(payload.get("call_id", ""))
                 task_state.record_tool(name)
                 tool_started_at = time.monotonic()
                 tool_result = agent.execute_tool(name, args)
@@ -243,8 +253,15 @@ class AgentLoop:
                         "args": args,
                         "content": result,
                         "metadata": dict(tool_result.metadata or {}),
+                        "call_id": call_id,
                         "created_at": now(),
                     }
+                )
+                agent.record_native_tool_observation(
+                    call_id,
+                    name,
+                    result,
+                    is_error=tool_result.metadata.get("tool_status") != "ok",
                 )
                 agent.run_store.write_task_state(task_state)
                 agent.emit_trace(
@@ -277,8 +294,9 @@ class AgentLoop:
                     break
                 continue
 
-            final = (payload or raw).strip()
+            final = str(payload or "").strip()
             agent.record({"role": "assistant", "content": final, "created_at": now()})
+            agent.clear_native_tool_state()
             task_state.finish_success(final)
             agent.promote_durable_memory(user_message, final)
             checkpoint = agent.create_checkpoint(task_state, user_message, trigger="run_finished")

@@ -16,31 +16,84 @@ from .workspace import IGNORED_PATH_NAMES
 BASE_TOOL_SPECS = {
     "list_files": {
         "schema": {"path": "str='.'"},
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": [],
+            "additionalProperties": False,
+        },
         "risky": False,
         "description": "List files in the workspace.",
     },
     "read_file": {
         "schema": {"path": "str", "start": "int=1", "end": "int=200"},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "start": {"type": "integer"},
+                "end": {"type": "integer"},
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
         "risky": False,
         "description": "Read a UTF-8 file by line range.",
     },
     "search": {
         "schema": {"pattern": "str", "path": "str='.'"},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string"},
+                "path": {"type": "string"},
+            },
+            "required": ["pattern"],
+            "additionalProperties": False,
+        },
         "risky": False,
         "description": "Search the workspace with rg or a simple fallback.",
     },
     "run_shell": {
         "schema": {"command": "str", "timeout": "int=20"},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "timeout": {"type": "integer", "minimum": 1, "maximum": 120},
+            },
+            "required": ["command"],
+            "additionalProperties": False,
+        },
         "risky": True,
         "description": "Run a shell command in the repo root.",
     },
     "write_file": {
         "schema": {"path": "str", "content": "str"},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            "required": ["path", "content"],
+            "additionalProperties": False,
+        },
         "risky": True,
         "description": "Write a text file.",
     },
     "patch_file": {
         "schema": {"path": "str", "old_text": "str", "new_text": "str"},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+            },
+            "required": ["path", "old_text", "new_text"],
+            "additionalProperties": False,
+        },
         "risky": True,
         "description": "Replace one exact text block in a file.",
     },
@@ -48,6 +101,15 @@ BASE_TOOL_SPECS = {
 
 DELEGATE_TOOL_SPEC = {
     "schema": {"task": "str", "max_steps": "int=3"},
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "task": {"type": "string"},
+            "max_steps": {"type": "integer", "minimum": 1},
+        },
+        "required": ["task"],
+        "additionalProperties": False,
+    },
     "risky": False,
     "description": "Ask a bounded read-only child agent to investigate.",
 }
@@ -230,6 +292,8 @@ def tool_run_shell(context, args):
         executable=shell_executable,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
         # 这里传入的是过滤后的环境变量，而不是直接继承整个父 shell 环境，
         # 目的是减少敏感信息被意外带进命令执行环境的风险。

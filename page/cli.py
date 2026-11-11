@@ -299,6 +299,9 @@ def build_agent(args):
     configured_secret_names = _configured_secret_names(args)
     store = SessionStore(workspace.repo_root + "/.page/sessions")
     model = _build_model_client(args)
+    tool_protocol = getattr(args, "tool_protocol", "text")
+    if tool_protocol == "native" and getattr(model, "provider_name", "") == "ollama":
+        raise ValueError("native tool protocol is only supported by openai/anthropic-compatible providers")
     session_id = args.resume
     if session_id == "latest":
         session_id = store.latest()
@@ -311,6 +314,7 @@ def build_agent(args):
             approval_policy=args.approval,
             max_steps=args.max_steps,
             max_new_tokens=args.max_new_tokens,
+            tool_protocol=tool_protocol,
             secret_env_names=configured_secret_names,
         )
     return Page(
@@ -320,6 +324,7 @@ def build_agent(args):
         approval_policy=args.approval,
         max_steps=args.max_steps,
         max_new_tokens=args.max_new_tokens,
+        tool_protocol=tool_protocol,
         secret_env_names=configured_secret_names,
     )
 
@@ -357,6 +362,12 @@ def build_arg_parser():
     )
     parser.add_argument("--max-steps", type=int, default=6, help="Maximum tool/model iterations per request.")
     parser.add_argument("--max-new-tokens", type=int, default=512, help="Maximum model output tokens per step.")
+    parser.add_argument(
+        "--tool-protocol",
+        choices=("text", "native"),
+        default="text",
+        help="Tool-call protocol. Text preserves the existing tag format; native uses provider tool calls.",
+    )
     parser.add_argument("--temperature", type=float, default=0.2, help="Sampling temperature sent to Ollama.")
     parser.add_argument("--top-p", type=float, default=0.9, help="Top-p sampling value sent to Ollama.")
     return parser
@@ -372,6 +383,7 @@ def _status_text(agent, model, host):
         f"endpoint:       {host}",
         f"temperature:    {getattr(client, 'temperature', '-')}",
         f"approval:       {agent.approval_policy}",
+        f"tool_protocol:  {agent.tool_protocol}",
         f"max_steps:      {agent.max_steps}",
         f"max_new_tokens: {agent.max_new_tokens}",
         f"session:        {agent.session.get('id', '-')}",

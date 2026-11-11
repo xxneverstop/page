@@ -1,0 +1,56 @@
+{
+  "budgets": [
+    3,
+    6,
+    9
+  ],
+  "interpretation_boundary": "FakeModel results verify budget enforcement and stop contracts only; they do not prove that six steps is globally optimal.",
+  "mode": "fake",
+  "repetitions": 1,
+  "rows": [
+    {
+      "avg_tool_steps": 0.9166666666666666,
+      "budget": 3,
+      "detail_artifact": "benchmarks\\results\\real-model-2026-09\\step-budget-3-details.json",
+      "failure_category_counts": {
+        "verifier_failed": 1
+      },
+      "max_tool_steps": 3,
+      "pass_rate": 0.9166666666666666,
+      "run_count": 12,
+      "stop_reason_counts": {
+        "final_answer_returned": 11,
+        "step_limit_reached": 1
+      },
+      "verifier_pass_rate": 0.9166666666666666
+    },
+    {
+      "avg_tool_steps": 1.0,
+      "budget": 6,
+      "detail_artifact": "benchmarks\\results\\real-model-2026-09\\step-budget-6-details.json",
+      "failure_category_counts": {},
+      "max_tool_steps": 4,
+      "pass_rate": 1.0,
+      "run_count": 12,
+      "stop_reason_counts": {
+        "final_answer_returned": 12
+      },
+      "verifier_pass_rate": 1.0
+    },
+    {
+      "avg_tool_steps": 1.0,
+      "budget": 9,
+      "detail_artifact": "benchmarks\\results\\real-model-2026-09\\step-budget-9-details.json",
+      "failure_category_counts": {},
+      "max_tool_steps": 4,
+      "pass_rate": 1.0,
+      "run_count": 12,
+      "stop_reason_counts": {
+        "final_answer_returned": 12
+      },
+      "verifier_pass_rate": 1.0
+    }
+  ],
+  "task_count": 12,
+  "total_runs": 36
+}

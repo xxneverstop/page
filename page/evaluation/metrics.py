@@ -1,5 +1,6 @@
 import json
 import tempfile
+from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -657,6 +658,8 @@ def _provider_summary_from_artifact(payload):
     cache_hits = []
     tool_steps = []
     attempts = []
+    durations = []
+    model_requests = []
     for row in rows:
         report = row.get("report", {})
         prompt_metadata = report.get("prompt_metadata", {})
@@ -664,6 +667,8 @@ def _provider_summary_from_artifact(payload):
         cache_hits.append(bool(prompt_metadata.get("cache_hit")))
         tool_steps.append(int(row.get("tool_steps", 0)))
         attempts.append(int(row.get("attempts", 0)))
+        durations.append(int(row.get("duration_ms", 0) or 0))
+        model_requests.append(int(row.get("model_requests", 0) or 0))
     summary = payload.get("summary", {})
     return {
         "status": "completed",
@@ -671,6 +676,21 @@ def _provider_summary_from_artifact(payload):
         "pass_rate": float(summary.get("pass_rate", 0.0)),
         "avg_tool_steps": _safe_mean(tool_steps),
         "avg_attempts": _safe_mean(attempts),
+        "avg_model_requests": _safe_mean(model_requests),
+        "avg_duration_ms": _safe_mean(durations),
+        "max_duration_ms": max(durations, default=0),
+        "verifier_pass_rate": _safe_ratio(
+            sum(1 for row in rows if row.get("verifier_passed")), len(rows)
+        ),
+        "total_input_tokens": sum(int(row.get("input_tokens", 0) or 0) for row in rows),
+        "total_output_tokens": sum(int(row.get("output_tokens", 0) or 0) for row in rows),
+        "total_tokens": sum(int(row.get("total_tokens", 0) or 0) for row in rows),
+        "parse_retries": sum(int(row.get("parse_retries", 0) or 0) for row in rows),
+        "unknown_tools": sum(int(row.get("unknown_tool_count", 0) or 0) for row in rows),
+        "validation_errors": sum(int(row.get("validation_error_count", 0) or 0) for row in rows),
+        "tool_errors": sum(int(row.get("tool_error_count", 0) or 0) for row in rows),
+        "stop_reason_counts": dict(Counter(str(row.get("stop_reason", "")) for row in rows)),
+        "failure_category_counts": dict(payload.get("failure_category_counts", {})),
         "cache_hit_rate": _safe_ratio(sum(1 for hit in cache_hits if hit), len(cache_hits)),
         "avg_cached_tokens": _safe_mean(cached_tokens),
         "artifact_path": payload.get("_artifact_path", ""),
@@ -748,15 +768,30 @@ def _normalize_text(value):
     return text
 
 
-def run_provider_experiments(benchmark_path, workspace_root, artifact_root, max_new_tokens=64):
+def run_provider_experiments(
+    benchmark_path,
+    workspace_root,
+    artifact_root,
+    max_new_tokens=64,
+    providers=None,
+    task_ids=None,
+    repetitions=1,
+    tool_protocol="text",
+    max_total_runs=12,
+):
     benchmark_path = Path(benchmark_path)
     workspace_root = Path(workspace_root)
     artifact_root = Path(artifact_root)
-    providers = []
-    for provider_name in ("gpt", "claude", "deepseek"):
+    provider_results = []
+    selected_providers = tuple(providers or ("deepseek",))
+    unknown_providers = sorted(set(selected_providers) - {"gpt", "claude", "deepseek"})
+    if unknown_providers:
+        raise ValueError(f"unknown providers: {', '.join(unknown_providers)}")
+    completed_runs = 0
+    for provider_name in selected_providers:
         profile = _provider_profile(provider_name)
         if profile["status"] != "ready":
-            providers.append(profile)
+            provider_results.append(profile)
             continue
         if provider_name == "gpt":
             def factory(task, workspace, profile=profile):
@@ -788,14 +823,20 @@ def run_provider_experiments(benchmark_path, workspace_root, artifact_root, max_
                 model_version=profile["model"],
                 max_new_tokens=max_new_tokens,
                 model_client_factory=factory,
+                task_ids=task_ids,
+                repetitions=repetitions,
+                tool_protocol=tool_protocol,
+                max_total_runs=max_total_runs - completed_runs,
             )
+            completed_runs += len(payload.get("rows", []))
             payload["_artifact_path"] = str(artifact_path)
             result = _provider_summary_from_artifact(payload)
             result["provider"] = provider_name
             result["model"] = profile["model"]
-            providers.append(result)
+            result["tool_protocol"] = tool_protocol
+            provider_results.append(result)
         except Exception as exc:
-            providers.append(
+            provider_results.append(
                 {
                     "provider": provider_name,
                     "status": "error",
@@ -803,7 +844,17 @@ def run_provider_experiments(benchmark_path, workspace_root, artifact_root, max_
                     "reason": str(exc),
                 }
             )
-    return {"providers": providers}
+    return {
+        "providers": provider_results,
+        "configuration": {
+            "selected_providers": list(selected_providers),
+            "task_ids": list(task_ids or []),
+            "repetitions": int(repetitions),
+            "tool_protocol": tool_protocol,
+            "max_total_runs": int(max_total_runs),
+        },
+        "completed_runs": completed_runs,
+    }
 
 
 def _followup_trace_metrics(agent):

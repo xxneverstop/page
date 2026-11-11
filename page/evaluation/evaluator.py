@@ -164,6 +164,8 @@ def _run_verifier(command, cwd):
             cwd=cwd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
     return subprocess.run(
         command,
@@ -171,6 +173,8 @@ def _run_verifier(command, cwd):
         shell=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
 
 
@@ -419,6 +423,11 @@ class BenchmarkEvaluator:
         max_new_tokens=DEFAULT_MAX_NEW_TOKENS,
         timezone_name=DEFAULT_TIMEZONE,
         model_client_factory=None,
+        task_ids=None,
+        repetitions=1,
+        tool_protocol="text",
+        max_total_runs=None,
+        step_budget_override=None,
     ):
         self.benchmark_path = Path(benchmark_path)
         self.artifact_path = Path(artifact_path)
@@ -432,6 +441,15 @@ class BenchmarkEvaluator:
         self.max_new_tokens = max_new_tokens
         self.timezone_name = timezone_name
         self.model_client_factory = model_client_factory
+        self.task_ids = {str(item) for item in (task_ids or [])}
+        self.repetitions = int(repetitions)
+        self.tool_protocol = str(tool_protocol)
+        self.max_total_runs = None if max_total_runs is None else int(max_total_runs)
+        self.step_budget_override = None if step_budget_override is None else int(step_budget_override)
+        if self.repetitions < 1:
+            raise ValueError("repetitions must be at least 1")
+        if self.tool_protocol not in {"text", "native"}:
+            raise ValueError("tool_protocol must be 'text' or 'native'")
         self.repo_root = self.benchmark_path.resolve().parent.parent
 
     def load(self):
@@ -439,7 +457,26 @@ class BenchmarkEvaluator:
 
     def run(self):
         benchmark = self.load()
-        rows = [self.run_task(task) for task in benchmark["tasks"]]
+        selected_tasks = [
+            task for task in benchmark["tasks"]
+            if not self.task_ids or str(task["id"]) in self.task_ids
+        ]
+        if self.task_ids:
+            found = {str(task["id"]) for task in selected_tasks}
+            missing = sorted(self.task_ids - found)
+            if missing:
+                raise ValueError(f"unknown task ids: {', '.join(missing)}")
+        requested_runs = len(selected_tasks) * self.repetitions
+        if self.max_total_runs is not None and requested_runs > self.max_total_runs:
+            raise ValueError(
+                f"requested {requested_runs} runs exceeds max_total_runs={self.max_total_runs}"
+            )
+        rows = []
+        for repetition in range(1, self.repetitions + 1):
+            for task in selected_tasks:
+                task_copy = dict(task)
+                task_copy["_repetition"] = repetition
+                rows.append(self.run_task(task_copy))
         summary = summarize_rows(rows)
         artifact = {
             "schema_version": BENCHMARK_SCHEMA_VERSION,
@@ -450,14 +487,18 @@ class BenchmarkEvaluator:
             },
             "benchmark": {
                 "source": str(self.benchmark_path.resolve().relative_to(self.repo_root)),
-                "task_count": len(benchmark["tasks"]),
+                "task_count": len(selected_tasks),
+                "run_count": len(rows),
             },
             "reproducibility": {
                 "fixture_snapshot_id": _fixture_snapshot_id(
-                    self.repo_root / str(task["fixture_repo"]) for task in benchmark["tasks"]
+                    self.repo_root / str(task["fixture_repo"]) for task in selected_tasks
                 ),
                 "model_name": self.model_name,
                 "model_version": self.model_version,
+                "tool_protocol": self.tool_protocol,
+                "repetitions": self.repetitions,
+                "max_total_runs": self.max_total_runs,
                 "decoding": {
                     "temperature": self.temperature,
                     "top_p": self.top_p,
@@ -475,8 +516,12 @@ class BenchmarkEvaluator:
 
     def run_task(self, task):
         task = dict(task)
+        repetition = int(task.pop("_repetition", 1))
+        if self.step_budget_override is not None:
+            task["step_budget"] = self.step_budget_override
         fixture_source = self.repo_root / task["fixture_repo"]
-        fixture_copy_root = self.workspace_root / task["id"] / fixture_source.name
+        run_key = str(task["id"]) if self.repetitions == 1 else f"{task['id']}-r{repetition}"
+        fixture_copy_root = self.workspace_root / run_key / fixture_source.name
         if fixture_copy_root.exists():
             shutil.rmtree(fixture_copy_root)
         fixture_copy_root.parent.mkdir(parents=True, exist_ok=True)
@@ -501,6 +546,7 @@ class BenchmarkEvaluator:
             max_steps=int(task["step_budget"]),
             max_new_tokens=self.max_new_tokens,
             allowed_tools=task["allowed_tools"],
+            tool_protocol=self.tool_protocol,
         )
         _apply_task_setup(agent, task, fixture_copy_root)
 
@@ -516,6 +562,27 @@ class BenchmarkEvaluator:
         task_state_path = agent.run_store.task_state_path(task_state)
         report_path = agent.run_store.report_path(task_state)
         report = agent.run_store.load_report(task_state.run_id)
+        trace_events = [
+            json.loads(line)
+            for line in agent.run_store.trace_path(task_state).read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        model_events = [item for item in trace_events if item.get("event") == "model_parsed"]
+        tool_events = [item for item in trace_events if item.get("event") == "tool_executed"]
+        run_finished = next(
+            (item for item in reversed(trace_events) if item.get("event") == "run_finished"),
+            {},
+        )
+        token_totals = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        for event in model_events:
+            metadata = event.get("completion_metadata", {}) or {}
+            for key in token_totals:
+                token_totals[key] += int(metadata.get(key, 0) or 0)
+        tool_error_codes = [
+            str(event.get("tool_error_code"))
+            for event in tool_events
+            if event.get("tool_error_code")
+        ]
 
         artifact_path = _artifact_path_for_task(task)
         artifact_file = fixture_copy_root / artifact_path
@@ -537,6 +604,7 @@ class BenchmarkEvaluator:
 
         return {
             "id": task["id"],
+            "repetition": repetition,
             "prompt": task["prompt"],
             "fixture_repo": task["fixture_repo"],
             "fixture_copy_relpath": _workspace_relative(fixture_copy_root, self.workspace_root),
@@ -564,6 +632,20 @@ class BenchmarkEvaluator:
             "non_failure_stop_reason": non_failure_stop_reason,
             "tool_steps": task_state.tool_steps,
             "attempts": task_state.attempts,
+            "model_requests": len(model_events),
+            "parse_retries": sum(1 for event in model_events if event.get("kind") == "retry"),
+            "tool_error_codes": tool_error_codes,
+            "unknown_tool_count": tool_error_codes.count("unknown_tool"),
+            "validation_error_count": tool_error_codes.count("invalid_arguments"),
+            "tool_error_count": len(tool_error_codes),
+            "input_tokens": token_totals["input_tokens"],
+            "output_tokens": token_totals["output_tokens"],
+            "total_tokens": token_totals["total_tokens"],
+            "duration_ms": int(run_finished.get("run_duration_ms", 0) or 0),
+            "tool_protocol": self.tool_protocol,
+            "tool_signature": agent.tool_signature(),
+            "provider": getattr(model_client, "provider_name", type(model_client).__name__),
+            "model": getattr(model_client, "model", self.model_version),
             "final_answer": final_answer,
             "stop_reason": task_state.stop_reason,
             "initial_history_empty": initial_history_empty,
@@ -611,6 +693,11 @@ def run_fixed_benchmark(
     max_new_tokens=DEFAULT_MAX_NEW_TOKENS,
     timezone_name=DEFAULT_TIMEZONE,
     model_client_factory=None,
+    task_ids=None,
+    repetitions=1,
+    tool_protocol="text",
+    max_total_runs=None,
+    step_budget_override=None,
 ):
     evaluator = BenchmarkEvaluator(
         benchmark_path=benchmark_path,
@@ -623,6 +710,11 @@ def run_fixed_benchmark(
         max_new_tokens=max_new_tokens,
         timezone_name=timezone_name,
         model_client_factory=model_client_factory,
+        task_ids=task_ids,
+        repetitions=repetitions,
+        tool_protocol=tool_protocol,
+        max_total_runs=max_total_runs,
+        step_budget_override=step_budget_override,
     )
     return evaluator.run()
 

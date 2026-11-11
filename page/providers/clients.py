@@ -11,6 +11,14 @@ from http.client import RemoteDisconnected
 import urllib.error
 import urllib.request
 
+from .tool_calling import (
+    ModelResponse,
+    anthropic_tool_calls,
+    anthropic_tool_definitions,
+    openai_tool_calls,
+    openai_tool_definitions,
+)
+
 OPENAI_COMPATIBLE_USER_AGENT = "page/0.1"
 
 
@@ -240,7 +248,16 @@ class OpenAICompatibleModelClient:
         self.last_completion_metadata = {}
         self.provider_name = "openai"
 
-    def complete(self, prompt, max_new_tokens, prompt_cache_key=None, prompt_cache_retention=None):
+    def complete(
+        self,
+        prompt,
+        max_new_tokens,
+        prompt_cache_key=None,
+        prompt_cache_retention=None,
+        tools=None,
+        observations=None,
+        continuation=None,
+    ):
         """向 OpenAI-compatible `/responses` 接口发起一次模型调用。
 
         为什么存在：
@@ -258,24 +275,37 @@ class OpenAICompatibleModelClient:
         落到 provider API 的地方。
         """
         self.last_completion_metadata = {}
+        native = tools is not None
+        observations = list(observations or [])
+        continuation = dict(continuation or {})
+        request_input = [
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": prompt}],
+            }
+        ]
+        if native and observations:
+            request_input = [
+                {
+                    "type": "function_call_output",
+                    "call_id": item["call_id"],
+                    "output": item["content"],
+                }
+                for item in observations
+            ]
         payload = {
             "model": self.model,
-            "input": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": prompt,
-                        }
-                    ],
-                }
-            ],
+            "input": request_input,
             "max_output_tokens": max_new_tokens,
             "stream": False,
         }
         if self.temperature is not None:
             payload["temperature"] = self.temperature
+        if native:
+            payload["tools"] = openai_tool_definitions(tools)
+            previous_response_id = str(continuation.get("response_id", ""))
+            if previous_response_id:
+                payload["previous_response_id"] = previous_response_id
         # runtime 传入的是"稳定前缀"的签名，而不是整段 prompt 的签名。
         # 这样缓存复用针对的是稳定段，不会因为动态 history 每轮变化而失效。
         if self.supports_prompt_cache and prompt_cache_key:
@@ -334,6 +364,13 @@ class OpenAICompatibleModelClient:
                     "prompt_cache_retention": prompt_cache_retention,
                     **_extract_usage_cache_details(response_data),
                 }
+            if native and isinstance(response_data, dict) and response_data:
+                return ModelResponse(
+                    text=text,
+                    tool_calls=openai_tool_calls(response_data),
+                    continuation={"response_id": str(response_data.get("id", ""))},
+                    metadata=dict(self.last_completion_metadata),
+                )
             if text:
                 return text
             raise RuntimeError("OpenAI-compatible error: could not extract text from event stream response")
@@ -352,7 +389,15 @@ class OpenAICompatibleModelClient:
             "prompt_cache_retention": prompt_cache_retention,
             **_extract_usage_cache_details(data),
         }
-        return _extract_openai_text(data)
+        text = _extract_openai_text(data)
+        if native:
+            return ModelResponse(
+                text=text,
+                tool_calls=openai_tool_calls(data),
+                continuation={"response_id": str(data.get("id", ""))},
+                metadata=dict(self.last_completion_metadata),
+            )
+        return text
 
 
 def _extract_anthropic_text(data):
@@ -376,29 +421,56 @@ class AnthropicCompatibleModelClient:
         self.last_completion_metadata = {}
         self.provider_name = "anthropic"
 
-    def complete(self, prompt, max_new_tokens, prompt_cache_key=None, prompt_cache_retention=None):
+    def complete(
+        self,
+        prompt,
+        max_new_tokens,
+        prompt_cache_key=None,
+        prompt_cache_retention=None,
+        tools=None,
+        observations=None,
+        continuation=None,
+    ):
         # 为了保持统一接口，runtime 仍然会传缓存参数进来；
         # 这里只是显式丢弃，因为当前 Anthropic-compatible 路径没有接缓存复用。
         del prompt_cache_key, prompt_cache_retention
         self.last_completion_metadata = {}
-        payload = {
-            "model": self.model,
-            "messages": [
+        native = tools is not None
+        observations = list(observations or [])
+        continuation = dict(continuation or {})
+        messages = list(continuation.get("messages", []) or [])
+        if not messages:
+            messages = [
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": prompt}],
+                }
+            ]
+        if native and observations:
+            messages.append(
                 {
                     "role": "user",
                     "content": [
                         {
-                            "type": "text",
-                            "text": prompt,
+                            "type": "tool_result",
+                            "tool_use_id": item["call_id"],
+                            "content": item["content"],
+                            "is_error": bool(item.get("is_error", False)),
                         }
+                        for item in observations
                     ],
                 }
-            ],
+            )
+        payload = {
+            "model": self.model,
+            "messages": messages,
             "max_tokens": max_new_tokens,
             "stream": False,
         }
         if self.temperature is not None:
             payload["temperature"] = self.temperature
+        if native:
+            payload["tools"] = anthropic_tool_definitions(tools)
 
         headers = {
             "Content-Type": "application/json",
@@ -446,6 +518,16 @@ class AnthropicCompatibleModelClient:
                 **_extract_usage_cache_details(data),
             }
             text = _extract_anthropic_text(data)
+            if native:
+                content = list(data.get("content", []) or [])
+                return ModelResponse(
+                    text=text,
+                    tool_calls=anthropic_tool_calls(data),
+                    continuation={
+                        "messages": messages + [{"role": "assistant", "content": content}]
+                    },
+                    metadata=dict(self.last_completion_metadata),
+                )
             if text:
                 return text
             last_content_types = [

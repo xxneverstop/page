@@ -4,6 +4,11 @@ __pycache__/
 *.pyo
 *.pyd
 
+.agents/
+.page/
+.pytest_cache/
+
+
 # Virtual environments
 .venv/
 venv/

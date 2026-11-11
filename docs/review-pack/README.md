@@ -1,5 +1,7 @@
 # Page 面试评审包
 
+> Reviewer index: Project pitch · Architecture map · Benchmark evidence · Sample run artifact list
+
 > 更新于 2026-08-06
 
 这套材料用于 Windows 11 本地面试。项目的核心亮点只有一个：**Page 能在任务中断后，先核对文件和动作状态，再安全地继续执行。**

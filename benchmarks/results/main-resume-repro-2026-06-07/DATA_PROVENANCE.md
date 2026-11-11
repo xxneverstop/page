@@ -21,8 +21,8 @@
 ```bash
 uv run python - <<'PY'
 from pathlib import Path
-from pico.evaluation.evaluator import run_harness_regression_v2
-from pico.evaluation.metrics import (
+from page.evaluation.evaluator import run_harness_regression_v2
+from page.evaluation.metrics import (
     run_context_ablation_v2,
     run_memory_ablation_v2,
     run_recovery_ablation_v2,
@@ -74,7 +74,7 @@ PY
 
 > 在 12 组长上下文配置里，将平均 prompt 长度从 7082 压到 5664，平均压缩率 16.19%，最高压缩率 33.28%，同时保证当前请求不被裁坏。
 
-原始简历口径：
+原始简历口径（历史快照；本目录未保存该旧版原始 JSON，不能当作当前代码的直接复跑结果）：
 
 | 指标 | 值 | 来源字段 |
 | --- | --- | --- |
@@ -125,7 +125,7 @@ PY
 
 怎么测的：
 
-`run_memory_ablation_v2(repetitions=5)` 内部构造 12 个 memory dependency 任务，分成 `fact_lookup`、`edit_dependency`、`history_reference` 三类。每个任务分别跑 `memory_off`、`memory_irrelevant`、`memory_on` 三种 variant。
+`run_memory_ablation_v2(repetitions=5)` 内部构造 12 个 memory dependency 任务，分成 `fact_lookup`、`edit_dependency`、`history_reference` 三类。每个任务分别跑 `memory_off`、`memory_irrelevant`、`memory_on` 三种 variant。因此“60 次”是 12 个任务 × 5 次重复实验的累计值，不是 12 个单次任务各读了 5 遍。
 
 判断重复读的方式是看 follow-up 阶段是否仍然需要工具读文件确认事实。`memory_on` 时相关事实已经进入可召回记忆，所以工具步数从 1 降到 0，重复读从 60 降到 0。
 

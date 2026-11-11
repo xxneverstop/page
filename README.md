@@ -39,11 +39,42 @@ python -m pip install -e .
 python -m page --help
 ```
 
-默认继续使用兼容性更好的文本工具协议；OpenAI/Anthropic-compatible 后端可显式启用原生 Tool Calling：
+首次使用，在仓库根目录复制配置模板：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+编辑 `.env`，填写所选后端的 API Key，并按服务配置模型和接口地址。默认后端是 DeepSeek，对应 `PAGE_DEEPSEEK_API_KEY`、`PAGE_DEEPSEEK_MODEL` 和 `PAGE_DEEPSEEK_API_BASE`；其他后端的配置项见 [.env.example](.env.example)。`.env` 已被 Git 忽略。
+
+配置完成后，启动交互模式或执行单次任务：
+
+```powershell
+python -m page
+python -m page "概述当前项目的目录结构"
+```
+
+通过 `PAGE_PROVIDER` 或命令行 `--provider` 可选择 `deepseek`、`openai`、`anthropic`、`ollama`；命令行参数优先。Ollama 使用本地服务，需要先启动服务并准备对应模型。
+
+`openai` 后端使用 Responses API，请将 `PAGE_OPENAI_API_BASE` 设置为支持 `/responses` 的基础地址；仅支持 `/chat/completions` 的服务无法直接接入。`anthropic` 和 `deepseek` 后端使用 Anthropic-compatible Messages API。
+
+默认使用文本工具协议；OpenAI/Anthropic-compatible 后端（含 DeepSeek 接入）可显式启用原生 Tool Calling：
 
 ```powershell
 python -m page --provider openai --tool-protocol native "Inspect this repository"
 ```
+
+原生协议需要服务端支持对应的工具调用字段；不支持时使用 `--tool-protocol text`。当前 Ollama 接入只支持文本工具协议。
+
+## 会话恢复与验证
+
+在原工作区恢复最近一次保存的会话：
+
+```powershell
+python -m page --resume latest
+```
+
+也可使用 `--resume <session_id>` 指定会话。恢复时保持原来的后端、模型和工具协议配置；原生协议会话需继续传入 `--tool-protocol native`。框架会核对 checkpoint、工作区及动作日志，再决定继续执行或要求人工复核。
 
 离线恢复演示不会调用真实模型，也不会修改项目源码：
 
@@ -51,9 +82,10 @@ python -m page --provider openai --tool-protocol native "Inspect this repository
 python scripts/interview_demo.py --all
 ```
 
-快速回归：
+安装测试依赖后运行快速回归：
 
 ```powershell
+python -m pip install pytest
 python -m pytest -q -m "not slow"
 ```
 
@@ -87,4 +119,4 @@ Page 提供 `list_files`、`read_file`、`search`、`run_shell`、`write_file`�
 - FakeModel Regression、模块消融和真实模型 Eval 必须分开解释；
 - Shell 的任意外部副作用无法自动证明安全，恢复时可能要求人工复核。
 
-面试学习材料见 `docs/mydocs/page-interview-study-guide.md`。
+架构说明见 [Agent Harness v1](docs/architecture/agent-harness-v1-overview.md)，演示和面试材料见 [面试评审包](docs/review-pack/README.md)。

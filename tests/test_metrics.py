@@ -2,12 +2,12 @@ import os
 from unittest.mock import patch
 
 from page.evaluation.metrics import (
-    _provider_profile,
     run_context_ablation_v2,
     run_memory_ablation_v2,
     run_recovery_ablation_v2,
-    write_benchmark_core_report,
 )
+from page.evaluation.provider_experiments import _provider_profile
+from page.evaluation.reports import write_benchmark_core_report
 
 
 def test_run_context_ablation_v2_writes_expected_artifact(tmp_path):

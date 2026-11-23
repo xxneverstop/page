@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
-from page.evaluation.recovery_experiment import RECOVERY_EXPERIMENT_TASKS, run_recovery_experiment
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from page.evaluation.recovery_experiment import RECOVERY_EXPERIMENT_TASKS, run_recovery_experiment  # noqa: E402
 
 
-DEFAULT_FAKE_ARTIFACT = Path("artifacts/interview-recovery-fake.json")
-DEFAULT_DEEPSEEK_ARTIFACT = Path("artifacts/interview-recovery-deepseek.json")
+DEFAULT_FAKE_ARTIFACT = ROOT / "artifacts/interview-recovery-fake.json"
+DEFAULT_DEEPSEEK_ARTIFACT = ROOT / "artifacts/interview-recovery-deepseek.json"
 
 
 def build_parser():
@@ -27,7 +32,7 @@ def build_parser():
 
 
 def _deepseek_factory(**_kwargs):
-    from page.evaluation.metrics import _make_provider_client
+    from page.evaluation.provider_experiments import _make_provider_client
 
     return _make_provider_client("deepseek")
 

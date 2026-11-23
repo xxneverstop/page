@@ -112,6 +112,8 @@ Page 提供 `list_files`、`read_file`、`search`、`run_shell`、`write_file`�
 详细口径见 `benchmarks/results/main-resume-repro-2026-06-07/DATA_PROVENANCE.md`。
 步数实验见 `benchmarks/results/real-model-2026-09/step-budget-sensitivity.json`。
 
+历史 Recovery 演示的 FakeModel 与 DeepSeek 原始结果已归档到 [recovery-demo-archive](benchmarks/results/recovery-demo-archive/DATA_PROVENANCE.md)。这是既有结果的原样保存，不是当前版本的新实验。
+
 ## 能力边界
 
 - 当前主体是本地单用户 CLI，不是生产级多租户平台；
@@ -119,4 +121,10 @@ Page 提供 `list_files`、`read_file`、`search`、`run_shell`、`write_file`�
 - FakeModel Regression、模块消融和真实模型 Eval 必须分开解释；
 - Shell 的任意外部副作用无法自动证明安全，恢复时可能要求人工复核。
 
-架构说明见 [Agent Harness v1](docs/architecture/agent-harness-v1-overview.md)，演示和面试材料见 [面试评审包](docs/review-pack/README.md)。
+## 项目导航
+
+- [`page/`](page/)：主运行框架；[`tests/`](tests/)：主项目测试。
+- [`scripts/`](scripts/)：演示与评测命令；[`benchmarks/`](benchmarks/)：固定任务与归档结果。
+- [文档索引](docs/README.md)：架构、演示材料与开发记录。
+- [mini-page](examples/mini-page/README.md)：独立教学实现。
+- [scratch](scratch/README.md)：主模块演示与学习草稿。

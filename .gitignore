@@ -1,13 +1,6 @@
 # Python
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
-
-.agents/
-.page/
-.pytest_cache/
-
 
 # Virtual environments
 .venv/
@@ -35,6 +28,7 @@ htmlcov/
 # Local scratch space
 tmp/
 .worktrees/
+.agents/
 .page/
 .mini-page/
 artifacts/
@@ -50,13 +44,17 @@ readme_intro_locked/
 
 # Local docs not intended for publication
 docs/*
+!docs/README.md
+!docs/roadmap.md
 !docs/review-pack/
-!docs/review-pack/README.md
 !docs/architecture/
-!docs/architecture/agent-harness-v1-overview.md
+!docs/develop/
+docs/develop/*
+!docs/develop/optimize-cli-ux.md
+!docs/develop/2026-11-18-project-structure-cleanup.md
+!docs/my-docs/
+docs/my-docs/*
+!docs/my-docs/fable5_prompt_leak_cl4_summary.md
 
 # OS files
 .DS_Store
-
-# Packaging metadata
-page.egg-info/

@@ -15,7 +15,7 @@
 3. [阿里 AI 应用开发面试问题与回答](./阿里AI应用开发面试问题与回答.md)：准备常见追问和口头回答。
 4. [执行清单](./执行清单.md)：面试前按清单完成复跑和自检。
 
-如果需要查看完整的开发分工，请读[详细分工与执行手册](../develop/0805-1-Page项目完善分工与执行手册.md)。
+项目结构与正式资料入口见[文档索引](../README.md)；恢复机制的数据流见[架构概览](../architecture/agent-harness-v1-overview.md)。
 
 ## 现场怎么演示
 
@@ -48,8 +48,9 @@ python scripts/interview_demo.py --scenario recovery --model fake --repetitions 
 - DeepSeek 用来做小样本真实模型验证：`blind_resume` 完成 4/6，`guarded_resume` 完成 6/6。
 - 这 12 次运行只覆盖 3 类人为构造的故障，不能说成线上成功率。
 - 主要实验文件：
-  - `artifacts/interview-recovery-fake-final.json`
-  - `artifacts/interview-recovery-deepseek-final.json`
+  - [FakeModel 原始结果](../../benchmarks/results/recovery-demo-archive/interview-recovery-fake-final.json)
+  - [DeepSeek 原始结果](../../benchmarks/results/recovery-demo-archive/interview-recovery-deepseek-final.json)
+  - [归档来源与缺失信息](../../benchmarks/results/recovery-demo-archive/DATA_PROVENANCE.md)：历史摘要没有关联完整版本与逐 Run Trace，不能当作当前版本的新实验。
 - 每次运行都会留下：
   - `task_state.json`：任务最终状态；
   - `trace.jsonl`：逐步执行记录；

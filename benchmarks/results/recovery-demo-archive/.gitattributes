@@ -1,0 +1,3 @@
+# Preserve the original bytes recorded in DATA_PROVENANCE.md.
+interview-recovery-deepseek-final.json -text
+interview-recovery-fake-final.json -text

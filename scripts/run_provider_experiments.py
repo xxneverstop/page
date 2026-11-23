@@ -8,14 +8,14 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from page.evaluation.metrics import run_provider_experiments  # noqa: E402
+from page.evaluation.provider_experiments import run_provider_experiments  # noqa: E402
 
 
 def build_arg_parser():
     parser = argparse.ArgumentParser(description="Run bounded provider experiments for page benchmark tasks.")
-    parser.add_argument("--benchmark-path", default="benchmarks/coding_tasks.json", help="Path to benchmark task JSON.")
-    parser.add_argument("--workspace-root", default="artifacts/provider-workspaces", help="Workspace root for provider experiment copies.")
-    parser.add_argument("--artifact-root", default="artifacts/provider-artifacts", help="Directory to store provider benchmark artifacts.")
+    parser.add_argument("--benchmark-path", default=str(ROOT / "benchmarks/coding_tasks.json"), help="Path to benchmark task JSON.")
+    parser.add_argument("--workspace-root", default=str(ROOT / "artifacts/provider-workspaces"), help="Workspace root for provider experiment copies.")
+    parser.add_argument("--artifact-root", default=str(ROOT / "artifacts/provider-artifacts"), help="Directory to store provider benchmark artifacts.")
     parser.add_argument("--output-json", required=True, help="Path to output provider experiment JSON.")
     parser.add_argument("--max-new-tokens", type=int, default=64, help="Max output tokens per provider run.")
     parser.add_argument("--providers", default="deepseek", help="Comma-separated provider names: deepseek,gpt,claude.")

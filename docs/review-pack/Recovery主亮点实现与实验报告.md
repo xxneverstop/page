@@ -137,7 +137,7 @@ FakeModel 用来稳定覆盖状态机；DeepSeek 用来观察真实模型能否�
 
 ### FakeModel：验证机制是否按设计工作
 
-实验文件：`artifacts/interview-recovery-fake-final.json`
+实验文件：[FakeModel 历史原始结果](../../benchmarks/results/recovery-demo-archive/interview-recovery-fake-final.json)。
 
 | 指标 | blind | guarded |
 | --- | ---: | ---: |
@@ -150,7 +150,7 @@ FakeModel 用来稳定覆盖状态机；DeepSeek 用来观察真实模型能否�
 
 ### DeepSeek：观察真实模型的续跑效果
 
-实验文件：`artifacts/interview-recovery-deepseek-final.json`
+实验文件：[DeepSeek 历史原始结果](../../benchmarks/results/recovery-demo-archive/interview-recovery-deepseek-final.json)。[归档来源说明](../../benchmarks/results/recovery-demo-archive/DATA_PROVENANCE.md)列出缺失的模型版本、代码版本和逐 Run Trace 信息；本报告数据不是当前版本的新实验。
 
 | 指标 | blind | guarded |
 | --- | ---: | ---: |

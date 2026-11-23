@@ -8,11 +8,11 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from page.evaluation.metrics import (  # noqa: E402
-    collect_resume_metrics,
+from page.evaluation.metrics import collect_resume_metrics  # noqa: E402
+from page.evaluation.provider_experiments import run_provider_experiments  # noqa: E402
+from page.evaluation.reports import (  # noqa: E402
     render_large_scale_experiment_report,
     render_resume_metrics_markdown,
-    run_provider_experiments,
 )
 
 
@@ -20,9 +20,9 @@ def build_arg_parser():
     parser = argparse.ArgumentParser(description="Run page large-scale experiments and write all experiment artifacts.")
     parser.add_argument("--benchmark-artifact", required=True, help="Path to benchmark artifact JSON.")
     parser.add_argument("--runs-root", required=True, help="Path to .page/runs root.")
-    parser.add_argument("--provider-benchmark-path", default="benchmarks/coding_tasks.json", help="Benchmark task source for provider experiments.")
-    parser.add_argument("--provider-workspace-root", default="artifacts/provider-workspaces", help="Workspace root for provider experiment copies.")
-    parser.add_argument("--provider-artifact-root", default="artifacts/provider-artifacts", help="Artifact root for provider benchmark outputs.")
+    parser.add_argument("--provider-benchmark-path", default=str(ROOT / "benchmarks/coding_tasks.json"), help="Benchmark task source for provider experiments.")
+    parser.add_argument("--provider-workspace-root", default=str(ROOT / "artifacts/provider-workspaces"), help="Workspace root for provider experiment copies.")
+    parser.add_argument("--provider-artifact-root", default=str(ROOT / "artifacts/provider-artifacts"), help="Artifact root for provider benchmark outputs.")
     parser.add_argument("--experiment-mode", choices=("synthetic", "real"), default="synthetic")
     parser.add_argument("--real-provider", choices=("gpt", "claude", "deepseek"), default="gpt")
     parser.add_argument("--memory-repetitions", type=int, default=3)

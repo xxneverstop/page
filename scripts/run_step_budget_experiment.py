@@ -26,11 +26,11 @@ def build_arg_parser():
     )
     parser.add_argument("--mode", choices=("fake",), default="fake")
     parser.add_argument("--budgets", type=_comma_ints, default=_comma_ints("3,6,9"))
-    parser.add_argument("--benchmark-path", default="benchmarks/coding_tasks.json")
+    parser.add_argument("--benchmark-path", default=str(ROOT / "benchmarks/coding_tasks.json"))
     parser.add_argument("--task-ids", default="", help="Optional comma-separated task ids.")
     parser.add_argument("--repetitions", type=int, default=1)
     parser.add_argument("--max-total-runs", type=int, default=36)
-    parser.add_argument("--workspace-root", default="artifacts/step-budget-workspaces")
+    parser.add_argument("--workspace-root", default=str(ROOT / "artifacts/step-budget-workspaces"))
     parser.add_argument("--output-json", required=True)
     return parser
 

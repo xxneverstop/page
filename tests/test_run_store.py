@@ -1,7 +1,26 @@
 import json
 
+from page import FakeModelClient, Page, SessionStore, WorkspaceContext
 from page.run_store import RunStore
 from page.task_state import STOP_REASON_FINAL_ANSWER_RETURNED, TaskState
+
+
+def build_workspace(tmp_path):
+    (tmp_path / "README.md").write_text("demo\n", encoding="utf-8")
+    return WorkspaceContext.build(tmp_path)
+
+
+def build_agent(tmp_path, outputs, **kwargs):
+    workspace = build_workspace(tmp_path)
+    store = SessionStore(tmp_path / ".page" / "sessions")
+    approval_policy = kwargs.pop("approval_policy", "auto")
+    return Page(
+        model_client=FakeModelClient(outputs),
+        workspace=workspace,
+        session_store=store,
+        approval_policy=approval_policy,
+        **kwargs,
+    )
 
 
 def test_run_store_creates_run_directory_and_state_file(tmp_path):
@@ -64,3 +83,67 @@ def test_run_store_tolerates_missing_final_report(tmp_path):
 
     assert store.trace_path(state.run_id).exists()
     assert not store.report_path(state.run_id).exists()
+
+
+def test_successful_run_persists_run_artifacts_and_stop_reason(tmp_path):
+    (tmp_path / "hello.txt").write_text("alpha\nbeta\n", encoding="utf-8")
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"read_file","args":{"path":"hello.txt","start":1,"end":2}}</tool>',
+            "<final>Finished.</final>",
+        ],
+    )
+
+    assert agent.ask("Do the thing") == "Finished."
+
+    runs_root = tmp_path / ".page" / "runs"
+    run_dirs = [path for path in runs_root.iterdir() if path.is_dir()]
+    assert len(run_dirs) == 1
+
+    run_dir = run_dirs[0]
+    task_state = json.loads((run_dir / "task_state.json").read_text(encoding="utf-8"))
+    report = json.loads((run_dir / "report.json").read_text(encoding="utf-8"))
+    trace_lines = (run_dir / "trace.jsonl").read_text(encoding="utf-8").splitlines()
+
+    assert task_state["task_id"] != task_state["run_id"]
+    assert run_dir.name == task_state["run_id"]
+    assert (run_dir / "task_state.json").exists()
+    assert (run_dir / "trace.jsonl").exists()
+    assert (run_dir / "report.json").exists()
+    assert task_state["stop_reason"] == "final_answer_returned"
+    assert task_state["final_answer"] == "Finished."
+    assert report["stop_reason"] == "final_answer_returned"
+    assert report["task_state"]["stop_reason"] == "final_answer_returned"
+    assert report["run_id"] == task_state["run_id"]
+    trace_events = [json.loads(line)["event"] for line in trace_lines]
+    assert trace_events[0] == "run_started"
+    assert trace_events[-1] == "run_finished"
+    assert trace_events.count("prompt_built") == 2
+    assert "tool_executed" in trace_events
+
+
+def test_write_file_trace_records_minimum_tool_contract_fields(tmp_path):
+    agent = build_agent(
+        tmp_path,
+        [
+            '<tool>{"name":"write_file","args":{"path":"notes.txt","content":"hello\\n"}}</tool>',
+            "<final>Done.</final>",
+        ],
+    )
+
+    assert agent.ask("Create notes.txt") == "Done."
+
+    trace_events = [
+        json.loads(line)
+        for line in agent.run_store.trace_path(agent.current_task_state).read_text(encoding="utf-8").splitlines()
+    ]
+    tool_event = [event for event in trace_events if event["event"] == "tool_executed"][-1]
+
+    assert tool_event["name"] == "write_file"
+    assert tool_event["risk_level"] == "high"
+    assert tool_event["read_only"] is False
+    assert tool_event["tool_status"] == "ok"
+    assert tool_event["affected_paths"] == ["notes.txt"]
+    assert tool_event["workspace_changed"] is True
+    assert tool_event["diff_summary"] == ["created:notes.txt"]

@@ -26,8 +26,8 @@ from page.evaluation.metrics import (
     run_context_ablation_v2,
     run_memory_ablation_v2,
     run_recovery_ablation_v2,
-    write_benchmark_core_report,
 )
+from page.evaluation.reports import write_benchmark_core_report
 
 out = Path("benchmarks/results/main-resume-repro-2026-06-07")
 run_harness_regression_v2(
@@ -47,6 +47,8 @@ write_benchmark_core_report(
 )
 PY
 ```
+
+入口说明（2026-11-18）：结构规整后，报告格式化函数位于 `page.evaluation.reports`，Provider 实验位于 `page.evaluation.provider_experiments`；上述三个模块消融函数仍位于 `page.evaluation.metrics`。本节命令使用当前模块入口，目录内 JSON 保持历史原始内容。复跑时请另选输出目录，避免覆盖历史归档；新结果可能随当前代码与模板变化。
 
 ## 数据逐条解释
 

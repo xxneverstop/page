@@ -1,3 +1,4 @@
+import json
 import os
 import shlex
 import subprocess
@@ -258,3 +259,40 @@ def test_configured_secret_env_names_are_redacted_in_trace_and_report(tmp_path):
     assert gh_pat not in report_text
     assert trace_text.count("<redacted>") >= 4
     assert report_text.count("<redacted>") >= 4
+
+
+def test_trace_and_report_redact_secret_env_values(tmp_path):
+    secret = "sk-test-secret-123"
+    command = subprocess.list2cmdline([sys.executable, "-c", f"print({secret!r})"])
+    with patch.dict(os.environ, {"OPENAI_API_KEY": secret}, clear=True):
+        agent = build_agent(
+            tmp_path,
+            [
+                "<tool>" + json.dumps({"name": "run_shell", "args": {"command": command, "timeout": 20}}) + "</tool>",
+                "<final>Masked.</final>",
+            ],
+        )
+
+        assert agent.ask("Mask the secret") == "Masked."
+
+    runs_root = tmp_path / ".page" / "runs"
+    run_dirs = [path for path in runs_root.iterdir() if path.is_dir()]
+    assert len(run_dirs) == 1
+
+    run_dir = run_dirs[0]
+    trace_text = (run_dir / "trace.jsonl").read_text(encoding="utf-8")
+    report_text = (run_dir / "report.json").read_text(encoding="utf-8")
+    trace_events = [json.loads(line) for line in trace_text.splitlines()]
+
+    assert secret not in trace_text
+    assert secret not in report_text
+
+    prompt_events = [event for event in trace_events if event["event"] == "prompt_built"]
+    assert prompt_events
+    assert prompt_events[0]["prompt_metadata"]["secret_env_count"] >= 1
+    assert "OPENAI_API_KEY" in prompt_events[0]["prompt_metadata"]["secret_env_names"]
+
+    tool_events = [event for event in trace_events if event["event"] == "tool_executed"]
+    assert tool_events
+    assert "<redacted>" in tool_events[0]["args"]["command"]
+    assert "<redacted>" in tool_events[0]["result"]

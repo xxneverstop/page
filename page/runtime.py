@@ -73,6 +73,7 @@ class Page:
         tool_protocol="text",
         resume_mode="guarded",
         fault_injection=None,
+        trace_detail=False,
     ):
         self.model_client = model_client
         self.workspace = workspace
@@ -97,6 +98,7 @@ class Page:
         if self.resume_mode not in {"guarded", "blind"}:
             raise ValueError("resume_mode must be 'guarded' or 'blind'")
         self.fault_injection = str(fault_injection or "").strip()
+        self.trace_detail = trace_detail
         self._fault_injection_consumed = False
         self.run_store = run_store or RunStore(Path(workspace.repo_root) / ".page" / "runs")
         self.session = session or {
@@ -715,6 +717,7 @@ class Page:
             secret_env_names=self.secret_env_names,
             shell_env_allowlist=self.shell_env_allowlist,
             tool_protocol=self.tool_protocol,
+            trace_detail=self.trace_detail,
         )
         # 委派的目标是“调查”，不是“放权执行”。
         # 子 agent 以只读方式运行、步数更少，最后只把结论文本返回给父 agent。

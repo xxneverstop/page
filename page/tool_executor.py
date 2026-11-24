@@ -46,6 +46,8 @@ class ToolExecutor:
 
     def execute(self, name, args):
         agent = self.agent
+        # Direct tool calls have no run to attach detailed progress to.
+        trace_detail = getattr(agent, "trace_detail", False) and agent.current_task_state is not None
         if agent.allowed_tools is not None and name not in agent.allowed_tools:
             return ToolExecutionResult(
                 content=f"error: tool '{name}' is not allowed in this run",
@@ -127,6 +129,9 @@ class ToolExecutor:
                 ),
             )
 
+        if trace_detail:
+            agent.emit_trace(agent.current_task_state, "tool_stage", {"name": name, "stage": "validated"})
+
         if agent.repeated_tool_call(name, args):
             if name == "read_file":
                 cached = next(
@@ -162,23 +167,40 @@ class ToolExecutor:
                 ),
             )
 
-        if tool["risky"] and not agent.approve(name, args):
-            return ToolExecutionResult(
-                content=f"error: approval denied for {name}",
-                metadata=_metadata(
-                    "rejected",
-                    tool_error_code="approval_denied",
-                    security_event_type="read_only_block" if agent.read_only else "approval_denied",
-                    risk_level="high",
-                    read_only=False,
-                ),
-            )
+        if tool["risky"]:
+            # Log before approve() because asking the user can block here.
+            if trace_detail:
+                agent.emit_trace(
+                    agent.current_task_state,
+                    "tool_stage",
+                    {"name": name, "stage": "approval_requested", "approval": agent.approval_policy},
+                )
+            approved = agent.approve(name, args)
+            if trace_detail:
+                agent.emit_trace(
+                    agent.current_task_state,
+                    "tool_stage",
+                    {"name": name, "stage": "approval_granted" if approved else "approval_denied"},
+                )
+            if not approved:
+                return ToolExecutionResult(
+                    content=f"error: approval denied for {name}",
+                    metadata=_metadata(
+                        "rejected",
+                        tool_error_code="approval_denied",
+                        security_event_type="read_only_block" if agent.read_only else "approval_denied",
+                        risk_level="high",
+                        read_only=False,
+                    ),
+                )
 
         before_snapshot = agent.capture_workspace_snapshot() if tool["risky"] else {}
         after_snapshot = before_snapshot
         action_record = agent.action_journal.begin(name, args, agent.current_task_state) if journaled else None
         try:
             agent.maybe_inject_fault("before_tool_execution")
+            if trace_detail:
+                agent.emit_trace(agent.current_task_state, "tool_stage", {"name": name, "stage": "executing"})
             content = clip(tool["run"](args))
             after_snapshot = agent.capture_workspace_snapshot() if tool["risky"] else before_snapshot
             affected_paths, diff_summary = agent.diff_workspace_snapshots(before_snapshot, after_snapshot)

@@ -99,6 +99,18 @@ Page 提供 `list_files`、`read_file`、`search`、`run_shell`、`write_file`�
 - `trace.jsonl`：按时间追加的执行事件；
 - `report.json`：面向复盘的运行摘要。
 
+在第二个 PowerShell 窗口查看格式化的中文日志：
+
+```powershell
+python scripts/watch_trace.py
+```
+
+查看器会跟踪新一轮请求。加 `--detail` 展开日志已记录的字段，加 `--once` 只回看最近一次运行。按 `Ctrl+C` 退出查看器。
+
+要观察完整的请求与响应，在运行 Page 的窗口退出并用 `python -m page --trace-detail` 启动，再发一条新请求。查看器会依次显示用户原文、提示词分段和正文、HTTP 请求体及原始响应体、模型提取结果、操作判定和工具执行阶段。原生工具协议可能用服务端的对话状态续接，以 HTTP 请求体为准。
+
+详细日志会写入 `.page/runs/`，可能包含问题、代码和工具结果。它沿用已有的敏感值过滤，不采集 HTTP 请求头。
+
 ## 可复现实验
 
 当前归档位于 `benchmarks/results/main-resume-repro-2026-06-07/`：

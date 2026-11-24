@@ -1,5 +1,9 @@
+import io
 import json
 from unittest.mock import patch
+import urllib.error
+
+import pytest
 
 from page import AnthropicCompatibleModelClient, OllamaModelClient, OpenAICompatibleModelClient
 
@@ -323,3 +327,126 @@ def test_anthropic_compatible_client_extracts_first_text_block():
         result = client.complete("hello", 42)
 
     assert result == "<final>ok</final>"
+
+
+@pytest.fixture(params=("ollama", "openai", "anthropic"))
+def http_trace_client(request):
+    base_url = "https://trace-user:trace-password@example.test"
+    if request.param == "ollama":
+        return OllamaModelClient("test-model", base_url, 0.0, 1.0, 30)
+    client_class = OpenAICompatibleModelClient if request.param == "openai" else AnthropicCompatibleModelClient
+    return client_class("test-model", base_url, "trace-api-key", 0.0, 30)
+
+
+class _TraceResponse(io.BytesIO):
+    status = 200
+    headers = {"Content-Type": "application/json"}
+
+    def __init__(self, body):
+        super().__init__(body.encode("utf-8"))
+        self.read_count = 0
+
+    def read(self):
+        self.read_count += 1
+        return super().read()
+
+
+def test_http_trace_records_actual_body_once_without_credentials(http_trace_client):
+    body = json.dumps(
+        {
+            "response": "<final>中文</final>",
+            "output_text": "<final>中文</final>",
+            "content": [{"type": "text", "text": "<final>中文</final>"}],
+        },
+        ensure_ascii=False,
+    )
+    response = _TraceResponse(body)
+    events = []
+    with patch("urllib.request.urlopen", return_value=response) as urlopen:
+        result = http_trace_client.complete("hello", 42, trace_callback=lambda name, data: events.append((name, data)))
+
+    assert http_trace_client.supports_http_trace is True
+    assert result == "<final>中文</final>"
+    assert response.read_count == 1
+    assert [name for name, _ in events] == ["model_http_request", "model_http_response"]
+    request_event, response_event = [data for _, data in events]
+    actual_request = urlopen.call_args.args[0]
+    assert request_event["body"] == json.loads(actual_request.data)
+    assert response_event["body"] == body
+    assert response_event["status"] == 200
+    assert all(data["attempt"] == 1 for _, data in events)
+    assert all(data["url"].startswith("https://example.test/") for _, data in events)
+    # 日志只采集正文和去掉 userinfo 的 URL，不采集认证头。
+    serialized = json.dumps(events)
+    assert "trace-user" not in serialized
+    assert "trace-password" not in serialized
+    assert "trace-api-key" not in serialized
+    assert "headers" not in serialized
+
+
+def test_http_trace_records_http_error_body_before_raising(http_trace_client):
+    body = '{"error": "rate limited"}'
+    response = _TraceResponse(body)
+    error = urllib.error.HTTPError("https://example.test", 429, "Too Many Requests", {}, response)
+    events = []
+    with patch("urllib.request.urlopen", side_effect=error):
+        with pytest.raises(RuntimeError, match="HTTP 429"):
+            http_trace_client.complete("hello", 42, trace_callback=lambda name, data: events.append((name, data)))
+
+    assert response.read_count == 1
+    assert [name for name, _ in events] == ["model_http_request", "model_http_response"]
+    assert events[1][1]["status"] == 429
+    assert events[1][1]["body"] == body
+
+
+def test_http_trace_records_each_connection_attempt_without_changing_retries(http_trace_client):
+    events = []
+    attempts = 1 if isinstance(http_trace_client, OllamaModelClient) else 3
+    with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("offline")) as urlopen:
+        with patch("page.providers.clients.time.sleep"):
+            with pytest.raises(RuntimeError, match="Could not reach"):
+                http_trace_client.complete("hello", 42, trace_callback=lambda name, data: events.append((name, data)))
+
+    assert urlopen.call_count == attempts
+    assert [name for name, _ in events] == ["model_http_request", "model_http_error"] * attempts
+    assert [data["attempt"] for name, data in events if name == "model_http_request"] == list(range(1, attempts + 1))
+    assert all(data["error"] == "<urlopen error offline>" for name, data in events if name == "model_http_error")
+
+
+def test_http_trace_preserves_timeout_exception_without_extra_retries(http_trace_client):
+    events = []
+    with patch("urllib.request.urlopen", side_effect=TimeoutError("timed out")) as urlopen:
+        with pytest.raises(TimeoutError, match="timed out"):
+            http_trace_client.complete("hello", 42, trace_callback=lambda name, data: events.append((name, data)))
+
+    assert urlopen.call_count == 1
+    assert [name for name, _ in events] == ["model_http_request", "model_http_error"]
+
+
+def test_openai_http_trace_keeps_raw_sse_body():
+    body = 'data: {"type":"response.output_text.done","text":"<final>ok</final>"}\n\ndata: [DONE]\n'
+    response = _TraceResponse(body)
+    response.headers = {"Content-Type": "text/event-stream"}
+    client = OpenAICompatibleModelClient("test-model", "https://example.test", "test-key", 0.0, 30)
+    events = []
+    with patch("urllib.request.urlopen", return_value=response):
+        result = client.complete("hello", 42, trace_callback=lambda name, data: events.append((name, data)))
+
+    assert result == "<final>ok</final>"
+    assert response.read_count == 1
+    assert events[1][1]["body"] == body
+
+
+def test_anthropic_http_trace_includes_retried_response_without_final_text():
+    empty_response = _TraceResponse('{"content": [{"type": "thinking", "thinking": "wait"}]}')
+    final_response = _TraceResponse('{"content": [{"type": "text", "text": "<final>ok</final>"}]}')
+    client = AnthropicCompatibleModelClient("test-model", "https://example.test", "test-key", 0.0, 30)
+    events = []
+    with patch("urllib.request.urlopen", side_effect=[empty_response, final_response]):
+        with patch("page.providers.clients.time.sleep"):
+            result = client.complete("hello", 42, trace_callback=lambda name, data: events.append((name, data)))
+
+    assert result == "<final>ok</final>"
+    assert [name for name, _ in events] == ["model_http_request", "model_http_response"] * 2
+    assert [data["attempt"] for _, data in events] == [1, 1, 2, 2]
+    assert empty_response.read_count == final_response.read_count == 1

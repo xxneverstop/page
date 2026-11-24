@@ -300,6 +300,7 @@ def build_agent(args):
     store = SessionStore(workspace.repo_root + "/.page/sessions")
     model = _build_model_client(args)
     tool_protocol = getattr(args, "tool_protocol", "text")
+    trace_detail = getattr(args, "trace_detail", False)
     if tool_protocol == "native" and getattr(model, "provider_name", "") == "ollama":
         raise ValueError("native tool protocol is only supported by openai/anthropic-compatible providers")
     session_id = args.resume
@@ -316,6 +317,7 @@ def build_agent(args):
             max_new_tokens=args.max_new_tokens,
             tool_protocol=tool_protocol,
             secret_env_names=configured_secret_names,
+            trace_detail=trace_detail,
         )
     return Page(
         model_client=model,
@@ -326,6 +328,7 @@ def build_agent(args):
         max_new_tokens=args.max_new_tokens,
         tool_protocol=tool_protocol,
         secret_env_names=configured_secret_names,
+        trace_detail=trace_detail,
     )
 
 
@@ -362,6 +365,7 @@ def build_arg_parser():
     )
     parser.add_argument("--max-steps", type=int, default=6, help="Maximum tool/model iterations per request.")
     parser.add_argument("--max-new-tokens", type=int, default=512, help="Maximum model output tokens per step.")
+    parser.add_argument("--trace-detail", action="store_true", help="Save full prompts, model bodies, and tool stages to the local trace.")
     parser.add_argument(
         "--tool-protocol",
         choices=("text", "native"),

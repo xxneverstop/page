@@ -1,6 +1,9 @@
 import json
 
+import pytest
+
 from page import FakeModelClient, Page, SessionStore, WorkspaceContext
+from page.providers.clients import AnthropicCompatibleModelClient
 from page.run_store import RunStore
 from page.task_state import STOP_REASON_FINAL_ANSWER_RETURNED, TaskState
 
@@ -147,3 +150,72 @@ def test_write_file_trace_records_minimum_tool_contract_fields(tmp_path):
     assert tool_event["affected_paths"] == ["notes.txt"]
     assert tool_event["workspace_changed"] is True
     assert tool_event["diff_summary"] == ["created:notes.txt"]
+
+
+@pytest.mark.parametrize("trace_detail", [False, True])
+def test_detailed_trace_shows_model_and_tool_round_trip(tmp_path, monkeypatch, trace_detail):
+    file_text = "文件内容" * 160
+    (tmp_path / "hello.txt").write_text(file_text, encoding="utf-8")
+    tool_call = '<tool>{"name":"read_file","args":{"path":"hello.txt","end":1}}</tool>'
+    replies = [json.dumps({"content": [{"type": "text", "text": text}]}) for text in (tool_call, "<final>完成</final>")]
+    requests = []
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def read(self):
+            return replies[len(requests) - 1].encode("utf-8")
+
+    def mock_http(request, timeout):
+        requests.append(json.loads(request.data))
+        return Response()
+
+    # 用真实 Messages 适配器验证顺序和 HTTP 结构，网络请求由测试拦截。
+    monkeypatch.setattr("urllib.request.urlopen", mock_http)
+    monkeypatch.setenv("PAGE_TEST_API_KEY", "test-credential-in-user-message")
+    agent = Page(
+        model_client=AnthropicCompatibleModelClient("fake", "https://example.test", "private-header-key", 0.2, 10),
+        workspace=build_workspace(tmp_path),
+        session_store=SessionStore(tmp_path / ".page" / "sessions"),
+        trace_detail=trace_detail,
+    )
+    question = "请读取 hello.txt\n" + "问题正文" * 90 + "\ntest-credential-in-user-message"
+    assert agent.ask(question) == "完成"
+    assert len(requests) == 2
+    trace = agent.run_store.trace_path(agent.current_task_state).read_text(encoding="utf-8")
+    assert "private-header-key" not in trace
+    assert "test-credential-in-user-message" not in trace
+    events = [json.loads(line) for line in trace.splitlines()]
+    first = {event["event"]: event for event in reversed(events)}
+    tool = first["tool_executed"]
+
+    if not trace_detail:
+        assert "prompt_rendered" not in first
+        assert "model_http_request" not in first
+        assert "model_extracted" not in first
+        assert "tool_stage" not in first
+        assert "payload" not in first["model_parsed"]
+        assert "[truncated " in tool["result"]
+        assert file_text not in tool["result"]
+        return
+
+    assert first["run_started"]["user_request"] == agent.redact_text(question)
+    rendered = first["prompt_rendered"]
+    assert rendered["tool_protocol"] == "text"
+    assert rendered["section_order"][-1] == "current_request"
+    assert rendered["prompt"] == agent.redact_text(requests[0]["messages"][0]["content"][0]["text"])
+    assert first["model_http_response"]["body"] == replies[0]
+    assert first["model_extracted"]["text"] == tool_call
+    assert first["model_parsed"]["payload"] == {"name": "read_file", "args": {"path": "hello.txt", "end": 1}}
+    assert file_text in tool["result"]
+    assert file_text in requests[1]["messages"][0]["content"][0]["text"]
+    order = [event["event"] for event in events]
+    steps = ("prompt_rendered", "model_http_request", "model_http_response", "model_extracted", "model_parsed", "tool_requested", "tool_stage", "tool_executed")
+    positions = [order.index(step) for step in steps]
+    assert positions == sorted(positions)

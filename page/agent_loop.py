@@ -1,9 +1,11 @@
 """Agent control loop extracted from the runtime facade."""
 
+from functools import partial
 import time
 
 from .checkpoint import CHECKPOINT_NONE_STATUS, CHECKPOINT_PARTIAL_STALE_STATUS, CHECKPOINT_WORKSPACE_MISMATCH_STATUS
 from .context_manager import ProtectedContextOverflow
+from .providers.tool_calling import ModelResponse
 from .task_state import TaskState
 from .workspace import clip, now
 
@@ -14,6 +16,7 @@ class AgentLoop:
 
     def run(self, user_message):
         agent = self.agent
+        trace_detail = agent.trace_detail
         run_started_at = time.monotonic()
         agent.memory.set_task_summary(user_message)
         agent.record({"role": "user", "content": user_message, "created_at": now()})
@@ -27,7 +30,8 @@ class AgentLoop:
             "run_started",
             {
                 "task_id": task_state.task_id,
-                "user_request": clip(user_message, 300),
+                "user_request": user_message if trace_detail else clip(user_message, 300),
+                **({"full_request": True} if trace_detail else {}),
             },
         )
         agent.emit_trace(
@@ -117,6 +121,16 @@ class AgentLoop:
                     "duration_ms": int((time.monotonic() - prompt_started_at) * 1000),
                 },
             )
+            if trace_detail:
+                # 原生工具续接可能只发送工具结果，本地拼接文本与实际请求体分开记录。
+                agent.emit_trace(task_state, "prompt_rendered", {
+                    "attempts": task_state.attempts,
+                    "tool_protocol": agent.tool_protocol,
+                    "section_order": prompt_metadata.get("section_order", []),
+                    "sections": prompt_metadata.get("sections", {}),
+                    "prompt": prompt,
+                    "finalization_only": finalizing,
+                })
             if prompt_metadata.get("resume_status") == CHECKPOINT_PARTIAL_STALE_STATUS:
                 checkpoint = agent.create_checkpoint(task_state, user_message, trigger="freshness_mismatch")
                 agent.run_store.write_task_state(task_state)
@@ -174,12 +188,16 @@ class AgentLoop:
                 prompt_cache_retention = "in_memory"
             model_started_at = time.monotonic()
             try:
+                model_kwargs = agent.model_request_kwargs()
+                # 按调用绑定 run，子 Agent 共享客户端时也不会写错日志文件。
+                if trace_detail and getattr(agent.model_client, "supports_http_trace", False):
+                    model_kwargs["trace_callback"] = partial(agent.emit_trace, task_state)
                 raw = agent.model_client.complete(
                     prompt,
                     agent.max_new_tokens,
                     prompt_cache_key=prompt_cache_key,
                     prompt_cache_retention=prompt_cache_retention,
-                    **agent.model_request_kwargs(),
+                    **model_kwargs,
                 )
             except Exception as exc:
                 final = f"Stopped because the model request failed: {type(exc).__name__}."
@@ -212,6 +230,13 @@ class AgentLoop:
                 )
                 agent.run_store.write_report(task_state, agent.redact_artifact(agent.build_report(task_state)))
                 return final
+            if trace_detail:
+                native_response = isinstance(raw, ModelResponse)
+                agent.emit_trace(task_state, "model_extracted", {
+                    "format": "native" if native_response else "text",
+                    "text": raw.text if native_response else str(raw),
+                    "tool_calls": [call.to_dict() for call in raw.tool_calls] if native_response else [],
+                })
             agent.accept_model_response(raw)
             completion_metadata = dict(getattr(agent.model_client, "last_completion_metadata", {}) or {})
             response_metadata = dict(getattr(raw, "metadata", {}) or {})
@@ -232,6 +257,7 @@ class AgentLoop:
                     "answer_preview": agent.redact_text(clip(payload, 120)) if kind == "final" else "",
                     "completion_metadata": completion_metadata,
                     "duration_ms": int((time.monotonic() - model_started_at) * 1000),
+                    **({"payload": payload} if trace_detail else {}),
                 },
             )
 
@@ -243,6 +269,8 @@ class AgentLoop:
                 args = payload.get("args", {})
                 call_id = str(payload.get("call_id", ""))
                 task_state.record_tool(name)
+                if trace_detail:
+                    agent.emit_trace(task_state, "tool_requested", {"name": name, "args": args, "call_id": call_id})
                 tool_started_at = time.monotonic()
                 tool_result = agent.execute_tool(name, args)
                 result = tool_result.content
@@ -270,8 +298,9 @@ class AgentLoop:
                     {
                         "name": name,
                         "args": args,
-                        "result": clip(result, 500),
+                        "result": result if trace_detail else clip(result, 500),
                         "duration_ms": int((time.monotonic() - tool_started_at) * 1000),
+                        **({"verbose": True} if trace_detail else {}),
                         **dict(tool_result.metadata or {}),
                     },
                 )

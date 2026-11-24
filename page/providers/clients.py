@@ -9,6 +9,7 @@ import json
 import time
 from http.client import RemoteDisconnected
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from .tool_calling import (
@@ -20,6 +21,15 @@ from .tool_calling import (
 )
 
 OPENAI_COMPATIBLE_USER_AGENT = "page/0.1"
+
+
+def _trace_http(callback, event, url, attempt, **payload):
+    if callback is None:
+        return
+    # 认证请求头不采集；URL 里的用户信息也不能进入日志。
+    parsed = urllib.parse.urlsplit(url)
+    safe_url = parsed._replace(netloc=parsed.netloc.rsplit("@", 1)[-1]).geturl()
+    callback(event, {"url": safe_url, "attempt": attempt, **payload})
 
 
 class FakeModelClient:
@@ -39,6 +49,8 @@ class FakeModelClient:
 
 
 class OllamaModelClient:
+    supports_http_trace = True
+
     def __init__(self, model, host, temperature, top_p, timeout):
         self.model = model
         self.host = host.rstrip("/")
@@ -49,7 +61,7 @@ class OllamaModelClient:
         self.last_completion_metadata = {}
         self.provider_name = "ollama"
 
-    def complete(self, prompt, max_new_tokens, **kwargs):
+    def complete(self, prompt, max_new_tokens, *, trace_callback=None, **kwargs):
         # Ollama 当前不支持我们这里接入的 prompt cache 语义，
         # 所以 runtime 传下来的缓存参数会被忽略。
         self.last_completion_metadata = {}
@@ -71,19 +83,30 @@ class OllamaModelClient:
             headers={"Content-Type": "application/json"},
             method="POST",
         )
+        _trace_http(trace_callback, "model_http_request", request.full_url, 1, body=payload)
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                data = json.loads(response.read().decode("utf-8"))
+                body_text = response.read().decode("utf-8")
+                _trace_http(
+                    trace_callback, "model_http_response", request.full_url, 1,
+                    status=getattr(response, "status", None), body=body_text,
+                )
+                data = json.loads(body_text)
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
+            _trace_http(trace_callback, "model_http_response", request.full_url, 1, status=exc.code, body=body)
             raise RuntimeError(f"Ollama request failed with HTTP {exc.code}: {body}") from exc
         except urllib.error.URLError as exc:
+            _trace_http(trace_callback, "model_http_error", request.full_url, 1, error=str(exc))
             raise RuntimeError(
                 "Could not reach Ollama.\n"
                 "Make sure `ollama serve` is running and the model is available.\n"
                 f"Host: {self.host}\n"
                 f"Model: {self.model}"
             ) from exc
+        except OSError as exc:
+            _trace_http(trace_callback, "model_http_error", request.full_url, 1, error=str(exc))
+            raise
 
         if data.get("error"):
             raise RuntimeError(f"Ollama error: {data['error']}")
@@ -236,6 +259,8 @@ def _extract_usage_cache_details(data):
 
 
 class OpenAICompatibleModelClient:
+    supports_http_trace = True
+
     def __init__(self, model, base_url, api_key, temperature, timeout):
         self.model = model
         self.base_url = _normalize_versioned_base_url(base_url)
@@ -257,6 +282,7 @@ class OpenAICompatibleModelClient:
         tools=None,
         observations=None,
         continuation=None,
+        trace_callback=None,
     ):
         """向 OpenAI-compatible `/responses` 接口发起一次模型调用。
 
@@ -329,19 +355,29 @@ class OpenAICompatibleModelClient:
         )
         attempts = 3
         for attempt in range(attempts):
+            _trace_http(trace_callback, "model_http_request", request.full_url, attempt + 1, body=payload)
             try:
                 with urllib.request.urlopen(request, timeout=self.timeout) as response:
                     body_text = response.read().decode("utf-8")
+                    _trace_http(
+                        trace_callback, "model_http_response", request.full_url, attempt + 1,
+                        status=getattr(response, "status", None), body=body_text,
+                    )
                     headers = getattr(response, "headers", {}) or {}
                     content_type = headers.get("Content-Type", "")
                 break
             except urllib.error.HTTPError as exc:
                 body = exc.read().decode("utf-8", errors="replace")
+                _trace_http(
+                    trace_callback, "model_http_response", request.full_url, attempt + 1,
+                    status=exc.code, body=body,
+                )
                 if exc.code >= 500 and attempt < attempts - 1:
                     time.sleep(0.5 * (attempt + 1))
                     continue
                 raise RuntimeError(f"OpenAI-compatible request failed with HTTP {exc.code}: {body}") from exc
             except (urllib.error.URLError, RemoteDisconnected) as exc:
+                _trace_http(trace_callback, "model_http_error", request.full_url, attempt + 1, error=str(exc))
                 if attempt < attempts - 1:
                     time.sleep(0.5 * (attempt + 1))
                     continue
@@ -350,6 +386,9 @@ class OpenAICompatibleModelClient:
                     f"Base URL: {self.base_url}\n"
                     f"Model: {self.model}"
                 ) from exc
+            except OSError as exc:
+                _trace_http(trace_callback, "model_http_error", request.full_url, attempt + 1, error=str(exc))
+                raise
 
         # 有些兼容后端返回普通 JSON，有些返回 SSE。
         # 这里两种都接住，并尽量统一抽取文本和 usage/cache 元数据。
@@ -411,6 +450,8 @@ def _extract_anthropic_text(data):
 
 
 class AnthropicCompatibleModelClient:
+    supports_http_trace = True
+
     def __init__(self, model, base_url, api_key, temperature, timeout):
         self.model = model
         self.base_url = _normalize_versioned_base_url(base_url)
@@ -430,6 +471,7 @@ class AnthropicCompatibleModelClient:
         tools=None,
         observations=None,
         continuation=None,
+        trace_callback=None,
     ):
         # 为了保持统一接口，runtime 仍然会传缓存参数进来；
         # 这里只是显式丢弃，因为当前 Anthropic-compatible 路径没有接缓存复用。
@@ -487,16 +529,26 @@ class AnthropicCompatibleModelClient:
         attempts = 3
         last_content_types = []
         for attempt in range(attempts):
+            _trace_http(trace_callback, "model_http_request", request.full_url, attempt + 1, body=payload)
             try:
                 with urllib.request.urlopen(request, timeout=self.timeout) as response:
                     body_text = response.read().decode("utf-8")
+                    _trace_http(
+                        trace_callback, "model_http_response", request.full_url, attempt + 1,
+                        status=getattr(response, "status", None), body=body_text,
+                    )
             except urllib.error.HTTPError as exc:
                 body = exc.read().decode("utf-8", errors="replace")
+                _trace_http(
+                    trace_callback, "model_http_response", request.full_url, attempt + 1,
+                    status=exc.code, body=body,
+                )
                 if exc.code >= 500 and attempt < attempts - 1:
                     time.sleep(0.5 * (attempt + 1))
                     continue
                 raise RuntimeError(f"Anthropic-compatible request failed with HTTP {exc.code}: {body}") from exc
             except (urllib.error.URLError, RemoteDisconnected) as exc:
+                _trace_http(trace_callback, "model_http_error", request.full_url, attempt + 1, error=str(exc))
                 if attempt < attempts - 1:
                     time.sleep(0.5 * (attempt + 1))
                     continue
@@ -505,6 +557,9 @@ class AnthropicCompatibleModelClient:
                     f"Base URL: {self.base_url}\n"
                     f"Model: {self.model}"
                 ) from exc
+            except OSError as exc:
+                _trace_http(trace_callback, "model_http_error", request.full_url, attempt + 1, error=str(exc))
+                raise
             try:
                 data = json.loads(body_text)
             except json.JSONDecodeError as exc:

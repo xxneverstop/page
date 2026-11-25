@@ -107,6 +107,14 @@ Page 提供 `list_files`、`read_file`、`search`、`run_shell`、`write_file`�
 - `trace.jsonl`：按时间追加的执行事件；
 - `report.json`：面向复盘的运行摘要。
 
+在浏览器查看运行时间线、模型判定、工具和恢复过程：
+
+```powershell
+python viewer/server.py
+```
+
+打开 `http://127.0.0.1:8765`。实时跟随、历史复盘和评测目录的用法见 [Page Trace Web](viewer/README.md)。
+
 在第二个 PowerShell 窗口查看格式化的中文日志：
 
 ```powershell

@@ -185,7 +185,7 @@ page/                          # 仓库根
 - 在现有 Evaluator 上移除 fixture 名称硬编码，明确 `repo_root`，支持多文件判定，再迁任务定义。参考修复放在 Agent 无权读取的位置，最终评分测试和配置由评测侧保护。受控自有任务限定工具和命令并保留 Shell 审批。陌生代码、不可信测试或开放 Shell 使用经验证的隔离，任务 Shell 与 Verifier 都接入。核验只读挂载、网络和凭据边界、镜像版本、时限及进程、磁盘、日志上限。
 - 批次开始前固定模型、协议、采样配置、快照、策略和 Skill 版本、故障点、费用与停止规则。每个任务、模型请求、Shell 和 Verifier 都须有时限。每次实际请求及内部重试都计数并查额度，记录失败调用、累计 Token 与估算费用，未知用量单列。超限停止并记录清理结果。
 - 用 `manifest.json` 固定条件，启动即登记 `runs.jsonl`，完成、失败、取消、超时和拒绝逐次保存。每次保留 Trace、结果、diff 与验收记录。中断后可凭原工件汇总，未结算运行单列，重跑使用新标识。可分享的正式归档只保留脱敏证据。
-- 默认 Trace 记录能关联 Task/Run、Iteration、逻辑模型请求、工具调用、动作和恢复结果的必要字段，兼容现有 `event` 与 `created_at`。当前公共字段和关联规则见 [Page Trace Format](../../TRACE_FORMAT.md)，查看器通过 `page-inspection-v1` 统一复盘。详细 Prompt、请求正文与工具输出仅显式开启，限制体积并脱敏。状态恢复依据持久化记录。
+- 默认 Trace 记录能关联 Task/Run、Iteration、逻辑模型请求、工具调用、动作和恢复结果的必要字段，兼容现有 `event` 与 `created_at`。当前公共字段和关联规则见 [Page Trace Format](../../TRACE_FORMAT.md)，查看器通过 `page-inspection-v2` 统一复盘。详细 Prompt、请求正文与工具输出仅显式开启，限制体积并脱敏。状态恢复依据持久化记录。
 
 ### 首轮实验
 

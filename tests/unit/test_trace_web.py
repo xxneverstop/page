@@ -189,14 +189,93 @@ def test_http_rejects_symlinked_run_and_artifact(web_viewer, tmp_path):
         trace_web.create_server(root / "run_link", port=0)
 
 
-def test_http_bounds_oversized_record_without_consuming_it(web_viewer, monkeypatch):
+def test_oversized_record_is_skipped_without_blocking_later_events(web_viewer, monkeypatch):
     root, _, fetch = web_viewer
     run = root / "run_large"
     run.mkdir()
-    (run / "trace.jsonl").write_bytes(_line({"event": "model_response", "text": "x" * 100}))
-    monkeypatch.setattr(trace_web, "MAX_FILE_BYTES", 64)
+    oversized = _line({"event": "model_response", "text": "x" * 400})
+    valid = _line({"event": "run_started", "user_request": "after large record"})
+    (run / "trace.jsonl").write_bytes(oversized + valid)
+    monkeypatch.setattr(trace_web, "MAX_FILE_BYTES", 128)
 
-    assert fetch("/api/runs/run_large/events?offset=0")[0] == 413
+    status, _, body = fetch("/api/runs/run_large/events?offset=0")
+    data = json.loads(body)
+
+    assert status == 200
+    assert [event["event"] for event in data["events"]] == ["run_started"]
+    assert data["skipped"] == 1
+    assert data["next_offset"] == len(oversized) + len(valid)
+
+
+def test_damaged_record_does_not_block_snapshot_or_mark_truncation(web_viewer):
+    root, _, fetch = web_viewer
+    run = root / "run_damaged"
+    run.mkdir()
+    body = b"{broken json\n" + _line({"event": "run_started"}) + _line({"event": "model_requested", "attempts": 1})
+    (run / "trace.jsonl").write_bytes(body)
+
+    status, _, payload = fetch("/api/runs/run_damaged/inspection")
+    data = json.loads(payload)
+
+    assert status == 200
+    assert [event["event"] for event in data["raw"]["events"]] == ["run_started", "model_requested"]
+    assert data["raw"]["skipped"] == 1
+    assert data["raw"]["truncated"] is False
+
+
+def test_partial_trailing_line_is_read_after_it_completes(web_viewer):
+    root, _, fetch = web_viewer
+    run = root / "run_partial"
+    run.mkdir()
+    trace = run / "trace.jsonl"
+    complete = _line({"event": "run_started"})
+    pending = _line({"event": "run_finished", "status": "completed"})
+    trace.write_bytes(complete + pending[:5])
+
+    first = json.loads(fetch("/api/runs/run_partial/inspection")[2])
+    assert [event["event"] for event in first["raw"]["events"]] == ["run_started"]
+    assert first["raw"]["truncated"] is False
+
+    with trace.open("ab") as stream:
+        stream.write(pending[5:])
+    second = json.loads(fetch("/api/runs/run_partial/inspection")[2])
+    assert [event["event"] for event in second["raw"]["events"]] == ["run_started", "run_finished"]
+
+
+def test_inspection_cache_rebuilds_only_after_artifact_changes(web_viewer, monkeypatch):
+    root, _, fetch = web_viewer
+    run = root / "run_cache"
+    run.mkdir()
+    trace = run / "trace.jsonl"
+    report = run / "report.json"
+    trace.write_bytes(_line({"event": "run_started"}) + _line({"event": "model_requested", "attempts": 1}))
+    report.write_text(json.dumps({"status": "completed"}), encoding="utf-8")
+
+    calls = []
+    original = trace_web.build_inspection
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(trace_web, "build_inspection", counting)
+
+    assert json.loads(fetch("/api/runs/run_cache/inspection")[2])["run"]["status"] == "completed"
+    assert json.loads(fetch("/api/runs/run_cache/inspection")[2])["run"]["status"] == "completed"
+    assert len(calls) == 1
+
+    with trace.open("ab") as stream:
+        stream.write(_line({"event": "model_parsed", "attempts": 1, "kind": "retry"}))
+    assert json.loads(fetch("/api/runs/run_cache/inspection")[2])["models"][0]["status"] == "retry"
+    assert len(calls) == 2
+
+    report.unlink()
+    assert json.loads(fetch("/api/runs/run_cache/inspection")[2])["run"]["status"] != "completed"
+    assert len(calls) == 3
+
+    report.write_text(json.dumps({"status": "completed"}), encoding="utf-8")
+    assert json.loads(fetch("/api/runs/run_cache/inspection")[2])["run"]["status"] == "completed"
+    assert len(calls) == 4
 
 
 def test_inspection_endpoint_returns_iteration_model_and_bounds_trace(web_viewer):
@@ -217,11 +296,25 @@ def test_inspection_endpoint_returns_iteration_model_and_bounds_trace(web_viewer
 
     assert status == 200
     assert headers["Cache-Control"] == "no-store"
-    assert data["schema_version"] == "page-inspection-v1"
+    assert data["schema_version"] == "page-inspection-v2"
     assert data["run"]["status"] == "completed"
     assert len(data["iterations"]) == 1
     assert data["iterations"][0]["outcome"] == "final"
     assert data["raw"]["events"][1]["iteration_id"].endswith("iteration:0001")
+
+def test_inspection_snapshot_at_exact_record_limit_is_not_truncated(web_viewer, monkeypatch):
+    root, _, fetch = web_viewer
+    run = root / "run_exact"
+    run.mkdir()
+    events = [{"event": "model_requested", "attempts": number} for number in range(2)]
+    (run / "trace.jsonl").write_text("".join(json.dumps(item) + "\n" for item in events), encoding="utf-8")
+    monkeypatch.setattr(trace_web, "MAX_INSPECTION_RECORDS", 2)
+
+    data = json.loads(fetch("/api/runs/run_exact/inspection")[2])
+
+    assert len(data["raw"]["events"]) == 2
+    assert data["raw"]["truncated"] is False
+
 
 def test_inspection_snapshot_reports_truncation_at_record_limit(web_viewer, monkeypatch):
     root, _, fetch = web_viewer

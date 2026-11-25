@@ -246,10 +246,20 @@ h3 { font-size: .78rem; color: var(--text-strong); }
 .data-table td { color: var(--text); }
 .data-table tr:last-child td { border-bottom: 0; }
 
-.budget-track { height: .6rem; overflow: hidden; border-radius: 999px; background: #222b3b; display: flex; }
-.budget-used { background: linear-gradient(90deg, #3d7fbc, #6da9e0); }
-.budget-over { background: var(--red); }
+/* 用 <progress> 表达动态预算比例，避免内联样式被 CSP 拦截。 */
+.budget-meter { display: block; width: 100%; height: .6rem; appearance: none; border: 0; border-radius: 999px; overflow: hidden; background: #222b3b; }
+.budget-meter::-webkit-progress-bar { background: #222b3b; }
+.budget-meter::-webkit-progress-value { background: linear-gradient(90deg, #3d7fbc, #6da9e0); }
+.budget-meter::-moz-progress-bar { background: linear-gradient(90deg, #3d7fbc, #6da9e0); }
+.budget-meter.is-over::-webkit-progress-value { background: var(--red); }
+.budget-meter.is-over::-moz-progress-bar { background: var(--red); }
 .budget-legend { display: flex; justify-content: space-between; gap: .5rem; margin-top: .42rem; color: var(--muted); font-size: .65rem; }
+/* 静态间距和按钮布局走工具类，模板里不再写 style 属性。 */
+.mt-45 { margin-top: .45rem; } .mt-50 { margin-top: .5rem; } .mt-55 { margin-top: .55rem; }
+.mt-60 { margin-top: .6rem; } .mt-65 { margin-top: .65rem; } .mt-70 { margin-top: .7rem; } .mt-75 { margin-top: .75rem; }
+.select-inline { width: auto; margin-top: 0; }
+.card-button { display: block; width: 100%; text-align: left; }
+.notice-banner { margin-bottom: .65rem; padding: .55rem .65rem; border: 1px solid #765b34; border-radius: .4rem; background: #2d2417; color: var(--amber); font-size: .7rem; line-height: 1.45; }
 .section-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .4rem; }
 .section-card { min-width: 0; padding: .52rem; border: 1px solid var(--line-soft); border-radius: .36rem; background: #0d131d; }
 .section-card strong { display: block; color: var(--text); font-size: .7rem; font-weight: 600; overflow-wrap: anywhere; }

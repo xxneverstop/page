@@ -49,13 +49,24 @@ python -m page --trace-detail
 - `GET /api/runs/<run_id>/events?offset=<n>` 增量读取 JSONL，适合实时跟随。
 - `GET /api/runs/<run_id>/report` 读取脱敏后的运行报告。
 
-页面使用 `GET /api/runs/<run_id>/inspection` 获取统一的 `page-inspection-v1` 模型。该接口组合 `trace.jsonl`、`task_state.json` 和 `report.json`，对历史事件补齐 Viewer 推导的关联 ID，并返回 `raw.truncated` 与 `raw.skipped`。Inspection 快照最多读取 12,000 条记录和 32 MiB，原始事件接口仍使用增量读取。
+页面使用 `GET /api/runs/<run_id>/inspection` 获取统一的 `page-inspection-v2` 模型。该接口组合 `trace.jsonl`、`task_state.json` 和 `report.json`，对历史事件补齐 Viewer 推导的关联 ID，并返回 `raw.truncated` 与 `raw.skipped`。Inspection 快照最多读取 12,000 条记录和 32 MiB；损坏或超大记录会跳过并继续读取后续事件。原始事件接口仍使用增量读取。
+
+服务端按三个工件的 mtime/size 缓存已构建的 Inspection，工件未变化时不重复解析；新事件、延迟落盘的 Report 或缺失后补写的工件都会触发重建。缓存只保留最近几个运行，超过单份 8 MiB 的结果不缓存。页面用 `event_id` 关联 Prompt、HTTP 正文和工具结果，正文在 `raw` 中只序列化一次。
 
 ## Trace 关联
 
 当前运行时写入 `page-trace-v2`。事件公共字段包括 `event_id`、`event_seq`、`run_id`、`task_id`、`session_id`、`created_at`、`iteration`、`iteration_id`、`model_request_id` 和 `tool_call_id`。关联规则和兼容策略见 [Page Trace Format](../TRACE_FORMAT.md)。
 
 `iteration_id` 表示一次 Agent Loop 轮次。`model_request_id` 表示一次逻辑模型请求，HTTP 重试以 `attempt` 记录在同一请求下。`tool_call_id` 贯穿 `tool_requested`、`tool_stage` 和 `tool_executed`。历史 Trace 缺少这些字段时，查看器会生成稳定的 Viewer ID，并在界面标记「旧日志推导」或「Viewer 推导」。这些 ID 用于复盘和导航，恢复动作继续由持久化状态、Journal、Checkpoint 和 Agent Core 的安全规则决定。
+
+统计口径：
+
+- HTTP 尝试以实际发送为单位，请求、响应和错误属于同一次尝试。
+- 工具统计区分请求、执行、成功、失败、拒绝和恢复跳过；`partial_success` 归入失败。
+- Token 用量区分完整、部分和未知。只有 Report 最后一次请求的记录会标记为 `last_request`，不会冒充整次运行的完整用量。
+- Agent 的最终回答不等于独立 Verifier 通过；普通 CLI 运行显示 Verifier 未知，不推断后续阶段。
+
+Context 视图每轮只展示一个合并快照，并允许选择任意两个快照比较。结构化 Section 差异和 Recovery 对账变化来自运行时记录；Prompt 文本 Diff 由 Viewer 在浏览器内计算，超长或行数过多时会明确跳过或截断，不能当作 Harness 决策证据。
 
 ## 安全边界
 

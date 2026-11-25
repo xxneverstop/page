@@ -421,6 +421,8 @@ class Page:
         self.resume_state = self.evaluate_resume_state()
         self.recovery_decision = self.action_journal.reconcile_all(self.resume_state.get("status", ""))
         prompt, metadata = self.context_manager.build(user_message)
+        history = list(self.session.get("history", []))
+        tool_history = [item for item in history if item.get("role") == "tool"]
         # 这里把“这轮 prompt 是怎么拼出来的”连同缓存相关状态一起记下来，
         # 后面 trace/report 才能解释清楚：为什么这一轮 prefix 变了、缓存有没有命中。
         metadata.update(
@@ -430,6 +432,14 @@ class Page:
                 "memory_chars": len(self.memory_text()),
                 "history_chars": len(self.history_text()),
                 "request_chars": len(user_message),
+                # 让 Viewer 能确认工具反馈确实进入了下一轮 History / Context。
+                "history_messages": len(history),
+                "history_tool_results": len(tool_history),
+                "history_tool_call_ids": [
+                    str(item.get("call_id"))
+                    for item in tool_history[-20:]
+                    if item.get("call_id")
+                ],
                 "tool_count": len(self.tools),
                 "workspace_docs": len(self.workspace.project_docs),
                 "recent_commits": len(self.workspace.recent_commits),

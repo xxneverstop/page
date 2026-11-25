@@ -5,6 +5,8 @@ import json
 import math
 import re
 import stat
+import threading
+from collections import OrderedDict
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -30,6 +32,13 @@ MAX_BATCH_BYTES = 1024 * 1024
 MAX_FILE_BYTES = 8 * 1024 * 1024
 MAX_INSPECTION_RECORDS = 12000
 MAX_INSPECTION_BYTES = 32 * 1024 * 1024
+# 超长单行用有限次读取丢弃，避免一条坏记录永久挡住后面的有效事件。
+MAX_RECORD_SKIP_BYTES = 256 * 1024 * 1024
+# Inspection 只在工件变更后重建；保留最近几个运行，缓存体本身有上限。
+INSPECTION_CACHE_MAX_ENTRIES = 4
+INSPECTION_CACHE_MAX_BODY = 8 * 1024 * 1024
+_INSPECTION_CACHE = OrderedDict()
+_INSPECTION_CACHE_LOCK = threading.Lock()
 TERMINAL_STATUSES = {"completed", "failed", "stopped"}
 
 
@@ -85,6 +94,35 @@ def _read_object(path):
         return None
 
 
+def _discard_oversized_line(stream):
+    """Consume the rest of an oversized JSONL line.
+
+    Returns True when the line was fully discarded. A pathological record over
+    the hard cap returns False so one bad line cannot make every refresh read
+    unbounded data.
+    """
+    remaining = MAX_RECORD_SKIP_BYTES
+    while remaining > 0:
+        chunk = stream.readline(min(remaining, 64 * 1024))
+        if not chunk:
+            return True
+        if chunk.endswith(b"\n"):
+            return True
+        remaining -= len(chunk)
+    return False
+
+
+def _load_line(line):
+    """Return a valid event dict, or None for damaged / non-event records."""
+    try:
+        event = json.loads(line, parse_constant=_finite_number, parse_float=_finite_number)
+        if not isinstance(event, dict) or not isinstance(event.get("event"), str):
+            return None
+        return event
+    except (TypeError, ValueError, UnicodeError, RecursionError):
+        return None
+
+
 def read_events(path, offset=0):
     """只提交完整 JSONL 行的字节游标，正在写入的末行留到下次。"""
     events, skipped, consumed = [], 0, 0
@@ -99,17 +137,22 @@ def read_events(path, offset=0):
             stream.seek(offset)
             while len(events) + skipped < MAX_RECORDS and consumed < MAX_BATCH_BYTES:
                 line = stream.readline(MAX_FILE_BYTES + 1)
+                if not line:
+                    break
                 if len(line) > MAX_FILE_BYTES:
-                    raise OverflowError("单条日志超过 8 MiB，无法在浏览器中展开。")
+                    # 超大记录跳过但继续推进游标，后面的有效事件仍然可读。
+                    if not _discard_oversized_line(stream):
+                        break
+                    skipped += 1
+                    consumed += len(line)
+                    offset = stream.tell()
+                    continue
                 if not line.endswith(b"\n"):
                     break
                 consumed += len(line)
                 offset = stream.tell()
-                try:
-                    event = json.loads(line, parse_constant=_finite_number, parse_float=_finite_number)
-                    if not isinstance(event, dict) or not isinstance(event.get("event"), str):
-                        raise TypeError
-                except (TypeError, ValueError, UnicodeError, RecursionError):
+                event = _load_line(line)
+                if event is None:
                     skipped += 1
                     continue
                 events.append(event)
@@ -126,35 +169,83 @@ def read_all_events(path):
 
     Raw event streaming remains incremental. The bounded snapshot keeps a long
     trace from making a refresh unbounded while still exposing its truncation.
+    Damaged or oversized records are skipped so later valid events stay visible.
     """
     events, skipped, consumed = [], 0, 0
     truncated = False
     try:
+        size = path.stat().st_size
         with path.open("rb") as stream:
             while len(events) + skipped < MAX_INSPECTION_RECORDS and consumed < MAX_INSPECTION_BYTES:
                 line = stream.readline(MAX_FILE_BYTES + 1)
                 if not line:
                     break
+                if len(line) > MAX_FILE_BYTES:
+                    if not _discard_oversized_line(stream):
+                        truncated = True
+                        break
+                    skipped += 1
+                    consumed += len(line)
+                    continue
                 if not line.endswith(b"\n"):
-                    truncated = True
+                    # 正在写入的末行下一次刷新会补上，不视为截断。
                     break
                 consumed += len(line)
-                if len(line) > MAX_FILE_BYTES:
-                    truncated = True
-                    break
-                try:
-                    event = json.loads(line, parse_constant=_finite_number, parse_float=_finite_number)
-                    if not isinstance(event, dict) or not isinstance(event.get("event"), str):
-                        raise TypeError
-                except (TypeError, ValueError, UnicodeError, RecursionError):
+                event = _load_line(line)
+                if event is None:
                     skipped += 1
                     continue
                 events.append(event)
-            if len(events) + skipped >= MAX_INSPECTION_RECORDS or consumed >= MAX_INSPECTION_BYTES:
+            # 只有到达上限且文件还有未读内容时才算截断；刚好读到最后一条不算。
+            if (len(events) + skipped >= MAX_INSPECTION_RECORDS or consumed >= MAX_INSPECTION_BYTES) and stream.tell() < size:
                 truncated = True
     except FileNotFoundError:
         pass
     return {"events": events, "skipped": skipped, "truncated": truncated}
+
+
+def _artifact_signature(paths):
+    signature = []
+    for path in paths:
+        try:
+            info = path.stat()
+        except OSError:
+            signature.append(None)
+        else:
+            signature.append((info.st_mtime_ns, info.st_size))
+    return tuple(signature)
+
+
+def build_inspection_body(root, run_id):
+    """Build (or reuse) the serialized inspection payload for one run.
+
+    The cache is invalidated by artifact mtime/size, so a late report write or
+    new trace lines rebuild while an idle finished run stays cached.
+    """
+    trace_path = _run_file(root, run_id, "trace.jsonl")
+    state_path = _run_file(root, run_id, "task_state.json")
+    report_path = _run_file(root, run_id, "report.json")
+    signature = _artifact_signature((trace_path, state_path, report_path))
+    cache_key = (str(root), run_id)
+    with _INSPECTION_CACHE_LOCK:
+        cached = _INSPECTION_CACHE.get(cache_key)
+        if cached and cached["signature"] == signature:
+            _INSPECTION_CACHE.move_to_end(cache_key)
+            return cached["body"]
+    snapshot = read_all_events(trace_path)
+    state = _read_object(state_path)
+    report = _read_object(report_path)
+    inspection = build_inspection(
+        run_id, snapshot["events"], report, state, snapshot["truncated"], snapshot["skipped"],
+    )
+    body = json.dumps(inspection, ensure_ascii=False, allow_nan=False).encode("utf-8")
+    if len(body) <= INSPECTION_CACHE_MAX_BODY:
+        with _INSPECTION_CACHE_LOCK:
+            _INSPECTION_CACHE[cache_key] = {"signature": signature, "body": body}
+            _INSPECTION_CACHE.move_to_end(cache_key)
+            while len(_INSPECTION_CACHE) > INSPECTION_CACHE_MAX_ENTRIES:
+                _INSPECTION_CACHE.popitem(last=False)
+    return body
 
 
 def _read_prompt(path):
@@ -226,6 +317,9 @@ class TraceHandler(BaseHTTPRequestHandler):
     def _send(self, status, body, content_type="application/json"):
         if content_type == "application/json":
             body = json.dumps(body, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        self._send_bytes(status, body, content_type)
+
+    def _send_bytes(self, status, body, content_type="application/json"):
         self.send_response(status)
         self.send_header("Content-Type", content_type + "; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -248,7 +342,10 @@ class TraceHandler(BaseHTTPRequestHandler):
         try:
             parsed = urlsplit(self.path)
             path = unquote(parsed.path)
-            if path in STATIC_FILES:
+            if path == "/favicon.ico":
+                # 浏览器自动请求图标；返回空响应，避免控制台出现无意义的 404。
+                self._send_bytes(204, b"", "text/plain")
+            elif path in STATIC_FILES:
                 filename, content_type = STATIC_FILES[path]
                 asset = VIEWER_DIR / filename
                 if _is_link(asset):
@@ -260,25 +357,19 @@ class TraceHandler(BaseHTTPRequestHandler):
                 parts = path.split("/")
                 if len(parts) != 5 or parts[1:3] != ["api", "runs"] or parts[4] not in {"events", "report", "inspection"}:
                     raise FileNotFoundError
-                trace_artifact = _run_file(self.server.runs_dir, parts[3], "trace.jsonl")
                 if parts[4] == "report":
                     self._send(200, _read_object(_run_file(self.server.runs_dir, parts[3], "report.json")))
                 elif parts[4] == "events":
                     values = parse_qs(parsed.query, keep_blank_values=True).get("offset", ["0"])
                     if len(values) != 1 or not values[0].isascii() or not values[0].isdigit():
                         raise ValueError
-                    self._send(200, read_events(trace_artifact, int(values[0])))
+                    self._send(200, read_events(_run_file(self.server.runs_dir, parts[3], "trace.jsonl"), int(values[0])))
                 else:
-                    snapshot = read_all_events(trace_artifact)
-                    state = _read_object(_run_file(self.server.runs_dir, parts[3], "task_state.json"))
-                    report = _read_object(_run_file(self.server.runs_dir, parts[3], "report.json"))
-                    self._send(200, build_inspection(parts[3], snapshot["events"], report, state, snapshot["truncated"], snapshot["skipped"]))
+                    self._send_bytes(200, build_inspection_body(self.server.runs_dir, parts[3]))
         except FileNotFoundError:
             self._send(404, {"error": "没有找到这份工件。"})
         except PermissionError:
             self._send(403, {"error": "不允许访问链接或运行目录外的文件。"})
-        except OverflowError as exc:
-            self._send(413, {"error": str(exc)})
         except (ValueError, RecursionError):
             self._send(400, {"error": "无效的请求参数。"})
         except OSError:

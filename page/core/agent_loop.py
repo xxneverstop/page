@@ -147,6 +147,8 @@ class AgentLoop:
                 agent.emit_trace(task_state, "prompt_rendered", {
                     "attempts": task_state.attempts,
                     "tool_protocol": agent.tool_protocol,
+                    # 这是本地渲染文本；原生工具续接时 Provider 实际入参以 HTTP 请求体为准。
+                    "prompt_source": "local_render",
                     "section_order": prompt_metadata.get("section_order", []),
                     "sections": prompt_metadata.get("sections", {}),
                     "prompt": prompt,
@@ -292,8 +294,14 @@ class AgentLoop:
                 args = payload.get("args", {})
                 call_id = str(payload.get("call_id") or f"{task_state.run_id}:iteration:{task_state.attempts:04d}:tool:1")
                 task_state.record_tool(name)
-                if trace_detail:
-                    agent.emit_trace(task_state, "tool_requested", {"name": name, "args": args, "call_id": call_id, "tool_call_id": call_id})
+                # 请求事件始终落盘，才能区分"模型请求了工具"和"工具实际执行"；
+                # 参数正文只在详细采集时记录，基础 Trace 保持精简。
+                agent.emit_trace(task_state, "tool_requested", {
+                    "name": name,
+                    "call_id": call_id,
+                    "tool_call_id": call_id,
+                    **({"args": args} if trace_detail else {}),
+                })
                 tool_started_at = time.monotonic()
                 agent._active_trace_tool_call = {
                     "tool_call_id": call_id,
@@ -362,7 +370,8 @@ class AgentLoop:
             agent.clear_native_tool_state()
             task_state.finish_success(final)
             agent.promote_durable_memory(user_message, final)
-            finish_iteration("final", next_step="verifier", answer_preview=agent.redact_text(clip(final, 120)))
+            # 普通 CLI 运行没有独立 Verifier，不能把最终回答写成验收通过。
+            finish_iteration("final", next_step="run_finished", answer_preview=agent.redact_text(clip(final, 120)))
             checkpoint = agent.create_checkpoint(task_state, user_message, trigger="run_finished")
             agent.run_store.write_task_state(task_state)
             agent.emit_trace(

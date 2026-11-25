@@ -13,9 +13,10 @@ import textwrap
 import threading
 
 from .config import load_project_env, provider_env
-from .providers.clients import AnthropicCompatibleModelClient, OllamaModelClient, OpenAICompatibleModelClient
-from .runtime import Page, SessionStore
-from .workspace import WorkspaceContext, middle
+from .core.providers.clients import AnthropicCompatibleModelClient, OllamaModelClient, OpenAICompatibleModelClient
+from .core.durability.session_store import SessionStore
+from .core.runtime import Page
+from .core.workspace import WorkspaceContext, middle
 
 DEFAULT_SECRET_ENV_NAMES = (
     "PAGE_OPENAI_API_KEY",
@@ -177,7 +178,7 @@ def _configured_secret_names(args):
 def _build_model_client(args):
     provider = _effective_provider(args)
     # CLI 只负责把 provider 选择翻译成具体 client。
-    # 真正的提示词格式、缓存支持、HTTP 协议差异，都封装在 models.py 里。
+    # 请求格式、缓存支持和 HTTP 协议差异由 core/providers 中的客户端处理。
     if provider == "openai":
         model = _effective_model(args, provider)
         base_url = getattr(args, "base_url", None) or provider_env("PAGE_OPENAI_API_BASE", ("OPENAI_API_BASE",), DEFAULT_OPENAI_BASE_URL)

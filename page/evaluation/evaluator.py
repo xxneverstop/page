@@ -10,13 +10,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from ..features import memory as memorylib
-from ..providers.clients import FakeModelClient
-from ..runtime import Page, SessionStore
-from ..run_store import RunStore
-from ..task_state import STOP_REASON_FINAL_ANSWER_RETURNED
-from ..tools import legal_tool_names
-from ..workspace import WorkspaceContext
+from ..core.context import memory as memorylib
+from ..core.providers.clients import FakeModelClient
+from ..core.durability.session_store import SessionStore
+from ..core.runtime import Page
+from ..core.observability.run_store import RunStore
+from ..core.task_state import STOP_REASON_FINAL_ANSWER_RETURNED
+from ..core.tools.registry import legal_tool_names
+from ..core.workspace import WorkspaceContext
 
 BENCHMARK_SCHEMA_VERSION = 1
 DEFAULT_BENCHMARK_PATH = Path("benchmarks/coding_tasks.json")

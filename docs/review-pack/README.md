@@ -15,7 +15,7 @@
 3. [阿里 AI 应用开发面试问题与回答](./阿里AI应用开发面试问题与回答.md)：准备常见追问和口头回答。
 4. [执行清单](./执行清单.md)：面试前按清单完成复跑和自检。
 
-项目结构与正式资料入口见[文档索引](../README.md)；恢复机制的数据流见[架构概览](../architecture/agent-harness-v1-overview.md)。
+项目结构与正式资料入口见[文档索引](../README.md)，运行数据流见主 README 的[核心流程](../../README.md#核心流程)。
 
 ## 现场怎么演示
 
@@ -57,4 +57,4 @@ python scripts/interview_demo.py --scenario recovery --model fake --repetitions 
   - `report.json`：本次运行汇总；
   - `action_journal`：动作是否开始、完成或需要人工确认的记录，保存在 Session 和 Report 中。
 
-架构入口见 [Agent Harness v1](../architecture/agent-harness-v1-overview.md)。
+恢复入口和验证命令见主 README 的[会话恢复与验证](../../README.md#会话恢复与验证)。

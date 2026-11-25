@@ -6,12 +6,12 @@ import json
 import tempfile
 from pathlib import Path
 
-from ..action_journal import InjectedCrash
-from ..providers.clients import FakeModelClient
-from ..runtime import Page
-from ..session_store import SessionStore
-from ..task_state import TaskState
-from ..workspace import WorkspaceContext, now
+from ..core.durability.action_journal import InjectedCrash
+from ..core.providers.clients import FakeModelClient
+from ..core.runtime import Page
+from ..core.durability.session_store import SessionStore
+from ..core.task_state import TaskState
+from ..core.workspace import WorkspaceContext, now
 
 
 RECOVERY_EXPERIMENT_TASKS = (

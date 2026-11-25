@@ -5,7 +5,6 @@ __pycache__/
 # Virtual environments
 .venv/
 venv/
-uv.lock
 
 # Packaging
 *.egg-info/
@@ -33,7 +32,6 @@ tmp/
 .mini-page/
 artifacts/
 release/
-readme_intro_locked/
 
 # Local secrets and provider configuration
 .env
@@ -45,7 +43,9 @@ readme_intro_locked/
 # Local docs not intended for publication
 docs/*
 !docs/README.md
-!docs/roadmap.md
+!docs/roadmap/
+docs/roadmap/*
+!docs/roadmap/roadmap-v2.md
 !docs/review-pack/
 !docs/architecture/
 !docs/develop/

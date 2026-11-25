@@ -4,7 +4,7 @@ from collections import Counter
 from pathlib import Path
 
 from ..config import load_project_env, provider_env
-from ..providers.clients import AnthropicCompatibleModelClient, OpenAICompatibleModelClient
+from ..core.providers.clients import AnthropicCompatibleModelClient, OpenAICompatibleModelClient
 from .evaluator import run_fixed_benchmark
 
 

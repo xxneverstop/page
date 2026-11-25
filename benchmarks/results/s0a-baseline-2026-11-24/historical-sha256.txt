@@ -1,0 +1,17 @@
+15ef7e8ce20c2cd1d325ff0a7b48c0fd2c009e7941d459ad35f7c353dc7862c2  benchmarks/results/main-resume-repro-2026-06-07/DATA_PROVENANCE.md
+06232d7085081676ea01017013c405f48b90dcbe485be9589a8c7ea9dc8fa553  benchmarks/results/main-resume-repro-2026-06-07/context-ablation-v2.json
+3dc5d97e30c205236b68d1116b53d3ebebf7ca94820015f6215cf86ecc99f888  benchmarks/results/main-resume-repro-2026-06-07/harness-regression-v2.json
+3c513a89e3eba245c3d2205db4d78e2a431c0a484562e3534e43863f2106b856  benchmarks/results/main-resume-repro-2026-06-07/memory-ablation-v2.json
+b3f6522b1fcff9ac7d92230d849fb9f55a56532b09eb4ba377c2a6e3783ea45d  benchmarks/results/main-resume-repro-2026-06-07/pico-benchmark-core-report.md
+cd82743fab53441a070f0fc798e3616838c06632d16ec61ad9f2a84942bf49be  benchmarks/results/main-resume-repro-2026-06-07/recovery-ablation-v2.json
+0f3364d1dd77fed22c7f3864e800359aef3e61598cca2cbb05517c88403b775a  benchmarks/results/real-model-2026-09/REAL_MODEL_PROVENANCE.md
+46c3f53d8a0575950878b9b44b2b485c3186340b12eabb01dc0e96e2d2c76f20  benchmarks/results/real-model-2026-09/deepseek-coding-benchmark.json
+c9aae788c5d89899c1b24ae4bdd982d97afeef095abf6eb58c3d382c1a3dbc4d  benchmarks/results/real-model-2026-09/real-model-summary.md
+840b3cc034cbe289b027dc40cf279e3eced9cbc18e5c784224c3b80edf1404c8  benchmarks/results/real-model-2026-09/step-budget-3-details.json
+03b5efa20d1fb70e2318e12e7d0fa3e6f766e488eb6d9a584d79d10e07fb0f6f  benchmarks/results/real-model-2026-09/step-budget-6-details.json
+23502383b4305e8e71412f87435091b7ecf8c9588d441f7a4c10937abb1357f1  benchmarks/results/real-model-2026-09/step-budget-9-details.json
+ee9ae3e6882e3d7b1ff61330167a6e1007f176f0af4f429e1396885ed462a3ef  benchmarks/results/real-model-2026-09/step-budget-sensitivity.json
+0a73d623eb41757ba4b79413367dd825bf0a612a0c82881db09a5cb097aa549a  benchmarks/results/recovery-demo-archive/.gitattributes
+9ed886c22b42cdabf6110eb4cbe3a254fed980b4983b6a8829c3b27e6e09b299  benchmarks/results/recovery-demo-archive/DATA_PROVENANCE.md
+b096f4478657bdf4c6fc868d61e7737b62f72df8367ba1d744414b8e52c6e54b  benchmarks/results/recovery-demo-archive/interview-recovery-deepseek-final.json
+bf3382075da86c74b654d3127af51a6728019521e8e5e63271225d3e484118f3  benchmarks/results/recovery-demo-archive/interview-recovery-fake-final.json

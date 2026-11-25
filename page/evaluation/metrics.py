@@ -4,9 +4,10 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..providers.clients import FakeModelClient
-from ..runtime import Page, SessionStore
-from ..workspace import WorkspaceContext
+from ..core.durability.session_store import SessionStore
+from ..core.providers.clients import FakeModelClient
+from ..core.runtime import Page
+from ..core.workspace import WorkspaceContext
 from .provider_experiments import _make_provider_client
 
 METRICS_SCHEMA_VERSION = 2

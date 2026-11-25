@@ -76,7 +76,7 @@
 
 格式错误会消耗模型尝试次数，但不消耗工具步骤；两种预算分开，避免模型无限重试。
 
-源码入口：[`page/agent_loop.py`](../../page/agent_loop.py)、[`page/context_manager.py`](../../page/context_manager.py)、[`page/tool_executor.py`](../../page/tool_executor.py)。
+相关代码位于 [Agent Loop](../../page/core/agent_loop.py)、[ContextManager](../../page/core/context/manager.py) 和 [ToolExecutor](../../page/core/tools/tool_executor.py)。
 
 ### Q2：为什么自己写 Runtime，不直接用 LangChain 或 LangGraph？
 

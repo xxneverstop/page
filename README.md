@@ -21,23 +21,28 @@ Page 是一个用 Python 实现的本地代码智能体 Agent Harness。它不�
   → task_state.json / trace.jsonl / report.json 落盘
 ```
 
-核心代码位于 `page/`：
+`page/cli.py` 提供命令行入口，运行框架位于 `page/core/`。
 
-- `runtime.py`、`agent_loop.py`：对象装配和控制循环；
-- `providers/`：OpenAI-compatible、Anthropic-compatible 等模型接入；
-- `tools.py`、`tool_executor.py`：7 类工具及安全执行链；
-- `context_manager.py`、`features/memory.py`：上下文预算和分层记忆；
-- `checkpoint.py`、`action_journal.py`：状态恢复和副作用对账；
-- `run_store.py`、`evaluation/`：运行工件和分层评测。
+- `core/runtime.py`、`core/agent_loop.py` 装配组件并运行控制循环。
+- `core/providers/` 接入 OpenAI-compatible、Anthropic-compatible 和其他模型。
+- `core/tools/` 注册 7 类工具并负责校验、审批和执行。
+- `core/context/` 管理上下文预算、提示前缀和分层记忆。
+- `core/durability/` 保存会话并对账工具动作，`core/recovery/` 根据检查点恢复任务。
+- `core/observability/` 保存运行工件，`page/evaluation/` 提供分层评测。
+
+Python 代码可从 `page` 导入公开接口，例如 `from page import Page`。
 
 ## 本地运行
 
-要求 Python 3.10+。项目运行时零第三方依赖，测试使用 pytest。
+要求 Python 3.10+。项目运行时零第三方依赖。开发验证使用 `.python-version` 指定的 Python 3.13.14，基线使用 uv 0.11.23。
 
 ```powershell
-python -m pip install -e .
-python -m page --help
+uv sync --locked --group dev
+uv run --locked page --help
+uv run --locked python -m page --help
 ```
+
+只安装 CLI 时也可以使用 `python -m pip install -e .`。
 
 首次使用，在仓库根目录复制配置模板：
 
@@ -76,17 +81,20 @@ python -m page --resume latest
 
 也可使用 `--resume <session_id>` 指定会话。恢复时保持原来的后端、模型和工具协议配置；原生协议会话需继续传入 `--tool-protocol native`。框架会核对 checkpoint、工作区及动作日志，再决定继续执行或要求人工复核。
 
-离线恢复演示不会调用真实模型，也不会修改项目源码：
+在已同步的环境中运行离线恢复演示、快速回归或完整回归：
 
 ```powershell
-python scripts/interview_demo.py --all
+uv run --locked --offline python scripts/interview_demo.py --all --model fake
+uv run --locked --offline python -m pytest -q -m 'not slow'
+uv run --locked --offline python -m pytest -q
 ```
 
-安装测试依赖后运行快速回归：
+Windows 上如果遇到临时文件权限或长路径错误，请在仓库之外选择可写的短路径。以下以新建的 `D:/tmp/page-check` 为例，在单独的 PowerShell 运行验证。`s` 供 Python 标准库使用，`p` 只供 pytest 使用，pytest 可清空该目录。
 
 ```powershell
-python -m pip install pytest
-python -m pytest -q -m "not slow"
+New-Item -ItemType Directory -Path 'D:/tmp/page-check/s'
+$env:TMPDIR = $env:TEMP = $env:TMP = 'D:/tmp/page-check/s'
+uv run --locked --offline python -m pytest -q --basetemp 'D:/tmp/page-check/p'
 ```
 
 ## 工具与运行工件
@@ -138,5 +146,3 @@ python scripts/watch_trace.py
 - [`page/`](page/)：主运行框架；[`tests/`](tests/)：主项目测试。
 - [`scripts/`](scripts/)：演示与评测命令；[`benchmarks/`](benchmarks/)：固定任务与归档结果。
 - [文档索引](docs/README.md)：架构、演示材料与开发记录。
-- [mini-page](examples/mini-page/README.md)：独立教学实现。
-- [scratch](scratch/README.md)：主模块演示与学习草稿。

@@ -49,7 +49,7 @@ Checkpoint 是任务进度快照；Action Journal 记录具体动作有没有执
 
 ### Action Journal：先记账，再动文件
 
-`page/action_journal.py` 会给每个动作生成稳定的 `action_id`。相同 Session、工具名和参数会得到相同 ID，恢复时就能识别“这是之前那个动作”。
+`page/core/durability/action_journal.py` 会给每个动作生成稳定的 `action_id`。相同 Session、工具名和参数会得到相同 ID，恢复时就能识别“这是之前那个动作”。
 
 动作状态如下：
 
@@ -86,7 +86,7 @@ Session 通过“先写临时文件，再原子替换”的方式保存，尽量
 
 ### freshness-aware Context：旧信息不能继续用
 
-`page/context_manager.py` 会检查上下文里的文件信息是否仍然有效。
+`page/core/context/manager.py` 会检查上下文里的文件信息是否仍然有效。
 
 文件摘要和 `read_file` 结果都会保存来源路径和内容 Hash。下一轮构建 Prompt 时，系统重新计算文件 Hash：
 

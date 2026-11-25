@@ -14,6 +14,8 @@ RUNS_DIR = Path(__file__).resolve().parents[1] / ".page" / "runs"
 LABELS = {
     "run_started": "提问",
     "recovery_reconciled": "恢复",
+    "iteration_started": "轮次开始",
+    "iteration_finished": "轮次结束",
     "prompt_built": "上下文",
     "prompt_rendered": "完整提示词",
     "model_requested": "模型请求",
@@ -75,6 +77,10 @@ def format_event(event, *, detail=False):
                 summary = " ".join(str(event.get("user_request", "")).splitlines())
         case "recovery_reconciled":
             summary = " · ".join(str(event[key]) for key in ("decision", "resume_status", "reason") if event.get(key))
+        case "iteration_started":
+            summary = f"第 {event.get('attempt', event.get('iteration', '?'))} 轮 · 已用工具 {event.get('tool_steps', '?')} 次"
+        case "iteration_finished":
+            summary = f"{STATUS.get(event.get('outcome', '?'), event.get('outcome', '?'))} · 下一步 {event.get('next_step', '?')}"
         case "prompt_built":
             prompt = event.get("prompt_metadata", {})
             memory = prompt.get("relevant_memory", {})
@@ -181,7 +187,13 @@ def format_event(event, *, detail=False):
     if isinstance(elapsed, (int, float)):
         duration = f"{elapsed / 1000:.2f} 秒" if elapsed >= 1000 else f"{elapsed} 毫秒"
         summary = f"{summary} · {duration}" if summary else duration
-    header = f"{stamp}  【{label}】 {summary}".rstrip()
+    identity = []
+    if event.get("iteration_id"):
+        identity.append(str(event["iteration_id"]))
+    if event.get("event_seq") is not None:
+        identity.append(f"#{event['event_seq']}")
+    header = f"{stamp}  【{label}】 {summary}" + (f" · {' · '.join(identity)}" if identity else "")
+    header = header.rstrip()
     if detail:
         extra = [json.dumps(event, ensure_ascii=False, indent=2)]
     # 外部工具文本可能包含终端控制字符，查看时只保留可读内容。

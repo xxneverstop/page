@@ -104,16 +104,16 @@ Page 提供 `list_files`、`read_file`、`search`、`run_shell`、`write_file`�
 每次 `ask()` 会在 `.page/runs/<run_id>/` 下生成：
 
 - `task_state.json`：最终状态和停止原因；
-- `trace.jsonl`：按时间追加的执行事件；
+- `trace.jsonl`：按时间追加的 `page-trace-v2` 执行事件，关联 Task、Run、Iteration、模型请求和工具调用；
 - `report.json`：面向复盘的运行摘要。
 
-在浏览器查看运行时间线、模型判定、工具和恢复过程：
+在浏览器查看运行概览、Agent Loop、上下文、模型、工具、恢复、评测和原始 Trace：
 
 ```powershell
 python viewer/server.py
 ```
 
-打开 `http://127.0.0.1:8765`。实时跟随、历史复盘和评测目录的用法见 [Page Trace Web](viewer/README.md)。
+打开 `http://127.0.0.1:8765`。查看器通过 `/api/runs/<run_id>/inspection` 读取统一的只读检查模型，实时跟随和历史复盘的用法见 [Page Agent Execution Inspector](viewer/README.md)。Trace 字段和关联规则见 [Page Trace Format](TRACE_FORMAT.md)。
 
 在第二个 PowerShell 窗口查看格式化的中文日志：
 
@@ -123,7 +123,7 @@ python scripts/watch_trace.py
 
 查看器会跟踪新一轮请求。加 `--detail` 展开日志已记录的字段，加 `--once` 只回看最近一次运行。按 `Ctrl+C` 退出查看器。
 
-要观察完整的请求与响应，在运行 Page 的窗口退出并用 `python -m page --trace-detail` 启动，再发一条新请求。查看器会依次显示用户原文、提示词分段和正文、HTTP 请求体及原始响应体、模型提取结果、操作判定和工具执行阶段。原生工具协议可能用服务端的对话状态续接，以 HTTP 请求体为准。
+要观察完整的请求与响应，在运行 Page 的窗口退出并用 `python -m page --trace-detail` 启动，再发一条新请求。查看器会依次显示用户原文、提示词分段和正文、HTTP 请求体及原始响应体、模型提取结果、操作判定和工具执行阶段。原生工具协议可能用服务端的对话状态续接，以 HTTP 请求体为准。详细正文只在显式开启采集时写入，并沿用运行时脱敏规则。
 
 详细日志会写入 `.page/runs/`，可能包含问题、代码和工具结果。它沿用已有的敏感值过滤，不采集 HTTP 请求头。
 

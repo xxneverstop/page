@@ -1,14 +1,19 @@
 """只读的本地 Page Trace 查看服务，仅使用 Python 标准库。"""
 
 import argparse
-from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import math
-from pathlib import Path
 import re
 import stat
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
+
+try:
+    from .trace_model import build_inspection
+except ImportError:
+    from trace_model import build_inspection
 
 
 VIEWER_DIR = Path(__file__).resolve().parent
@@ -23,6 +28,8 @@ MAX_RECORDS = 200
 MAX_BATCH_BYTES = 1024 * 1024
 # shortcut: 单份 JSON 工件和单条日志限 8 MiB，更大记录需改为分块展示。
 MAX_FILE_BYTES = 8 * 1024 * 1024
+MAX_INSPECTION_RECORDS = 12000
+MAX_INSPECTION_BYTES = 32 * 1024 * 1024
 TERMINAL_STATUSES = {"completed", "failed", "stopped"}
 
 
@@ -101,8 +108,8 @@ def read_events(path, offset=0):
                 try:
                     event = json.loads(line, parse_constant=_finite_number, parse_float=_finite_number)
                     if not isinstance(event, dict) or not isinstance(event.get("event"), str):
-                        raise ValueError
-                except (ValueError, UnicodeError, RecursionError):
+                        raise TypeError
+                except (TypeError, ValueError, UnicodeError, RecursionError):
                     skipped += 1
                     continue
                 events.append(event)
@@ -112,6 +119,42 @@ def read_events(path, offset=0):
         reset = offset > 0
         offset = 0
     return {"events": events, "next_offset": offset, "has_more": has_more, "skipped": skipped, "reset": reset}
+
+
+def read_all_events(path):
+    """Read a bounded snapshot for the derived inspection model.
+
+    Raw event streaming remains incremental. The bounded snapshot keeps a long
+    trace from making a refresh unbounded while still exposing its truncation.
+    """
+    events, skipped, consumed = [], 0, 0
+    truncated = False
+    try:
+        with path.open("rb") as stream:
+            while len(events) + skipped < MAX_INSPECTION_RECORDS and consumed < MAX_INSPECTION_BYTES:
+                line = stream.readline(MAX_FILE_BYTES + 1)
+                if not line:
+                    break
+                if not line.endswith(b"\n"):
+                    truncated = True
+                    break
+                consumed += len(line)
+                if len(line) > MAX_FILE_BYTES:
+                    truncated = True
+                    break
+                try:
+                    event = json.loads(line, parse_constant=_finite_number, parse_float=_finite_number)
+                    if not isinstance(event, dict) or not isinstance(event.get("event"), str):
+                        raise TypeError
+                except (TypeError, ValueError, UnicodeError, RecursionError):
+                    skipped += 1
+                    continue
+                events.append(event)
+            if len(events) + skipped >= MAX_INSPECTION_RECORDS or consumed >= MAX_INSPECTION_BYTES:
+                truncated = True
+    except FileNotFoundError:
+        pass
+    return {"events": events, "skipped": skipped, "truncated": truncated}
 
 
 def _read_prompt(path):
@@ -215,17 +258,21 @@ class TraceHandler(BaseHTTPRequestHandler):
                 self._send(200, list_runs(self.server.runs_dir))
             else:
                 parts = path.split("/")
-                if len(parts) != 5 or parts[1:3] != ["api", "runs"] or parts[4] not in {"events", "report"}:
+                if len(parts) != 5 or parts[1:3] != ["api", "runs"] or parts[4] not in {"events", "report", "inspection"}:
                     raise FileNotFoundError
-                filename = "trace.jsonl" if parts[4] == "events" else "report.json"
-                artifact = _run_file(self.server.runs_dir, parts[3], filename)
+                trace_artifact = _run_file(self.server.runs_dir, parts[3], "trace.jsonl")
                 if parts[4] == "report":
-                    self._send(200, _read_object(artifact))
-                else:
+                    self._send(200, _read_object(_run_file(self.server.runs_dir, parts[3], "report.json")))
+                elif parts[4] == "events":
                     values = parse_qs(parsed.query, keep_blank_values=True).get("offset", ["0"])
                     if len(values) != 1 or not values[0].isascii() or not values[0].isdigit():
                         raise ValueError
-                    self._send(200, read_events(artifact, int(values[0])))
+                    self._send(200, read_events(trace_artifact, int(values[0])))
+                else:
+                    snapshot = read_all_events(trace_artifact)
+                    state = _read_object(_run_file(self.server.runs_dir, parts[3], "task_state.json"))
+                    report = _read_object(_run_file(self.server.runs_dir, parts[3], "report.json"))
+                    self._send(200, build_inspection(parts[3], snapshot["events"], report, state, snapshot["truncated"], snapshot["skipped"]))
         except FileNotFoundError:
             self._send(404, {"error": "没有找到这份工件。"})
         except PermissionError:

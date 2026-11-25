@@ -48,6 +48,7 @@ DURABLE_MEMORY_LINE_PATTERNS = (
     ("user-preferences", re.compile(r"^偏好：\s*(.+)$")),
 )
 SECRET_SHAPED_TEXT_PATTERN = re.compile(r"(?i)(\b(api[_ -]?key|token|secret|password)\b|sk-[A-Za-z0-9_-]{6,})")
+TRACE_SCHEMA_VERSION = "page-trace-v2"
 
 __all__ = ["Page", "SessionStore"]
 
@@ -100,6 +101,8 @@ class Page:
         self.fault_injection = str(fault_injection or "").strip()
         self.trace_detail = trace_detail
         self._fault_injection_consumed = False
+        self._trace_sequence = 0
+        self._active_trace_tool_call = None
         self.run_store = run_store or RunStore(Path(workspace.repo_root) / ".page" / "runs")
         self.session = session or {
             "id": datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6],
@@ -449,11 +452,38 @@ class Page:
 
     def emit_trace(self, task_state, event, payload=None):
         payload = self.redact_artifact(payload or {})
-        payload["event"] = event
-        payload["created_at"] = now()
+        event_name = str(event or "unknown")
+        self._trace_sequence += 1
+        run_id = str(getattr(task_state, "run_id", "") or "")
+        task_id = str(getattr(task_state, "task_id", "") or "")
+        attempts = int(getattr(task_state, "attempts", 0) or 0)
+        iteration_id = f"{run_id}:iteration:{attempts:04d}" if run_id and attempts else ""
+        model_event = event_name.startswith("model_") or event_name in {"prompt_built", "prompt_rendered"}
+        model_request_id = f"{run_id}:model:{attempts:04d}" if run_id and attempts and model_event else ""
+        active_tool = self._active_trace_tool_call if event_name.startswith("tool_") else None
+        enriched = {
+            "trace_schema": TRACE_SCHEMA_VERSION,
+            "trace_version": 2,
+            "event_id": f"{run_id}:event:{self._trace_sequence}" if run_id else f"event:{self._trace_sequence}",
+            "event_seq": self._trace_sequence,
+            "run_id": run_id,
+            "task_id": task_id,
+            "session_id": str(self.session.get("id", "") or ""),
+            "event": event_name,
+            "created_at": now(),
+        }
+        if iteration_id:
+            enriched["iteration"] = attempts
+            enriched["iteration_id"] = iteration_id
+        if model_request_id:
+            enriched["model_request_id"] = model_request_id
+        if active_tool:
+            enriched["tool_call_id"] = str(active_tool.get("tool_call_id", ""))
+            enriched.setdefault("model_request_id", str(active_tool.get("model_request_id", "")))
+        enriched.update(payload)
         # trace 是运行中的逐事件时间线，适合回答“这一轮 agent 到底做了什么”。
-        self.run_store.append_trace(task_state, payload)
-        return payload
+        self.run_store.append_trace(task_state, enriched)
+        return enriched
 
     def capture_workspace_snapshot(self):
         snapshot = {}
@@ -663,6 +693,8 @@ class Page:
         return {
             "run_id": task_state.run_id,
             "task_id": task_state.task_id,
+            "session_id": self.session.get("id", ""),
+            "trace_schema": TRACE_SCHEMA_VERSION,
             "status": task_state.status,
             "stop_reason": task_state.stop_reason,
             "final_answer": task_state.final_answer,

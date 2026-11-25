@@ -197,3 +197,43 @@ def test_http_bounds_oversized_record_without_consuming_it(web_viewer, monkeypat
     monkeypatch.setattr(trace_web, "MAX_FILE_BYTES", 64)
 
     assert fetch("/api/runs/run_large/events?offset=0")[0] == 413
+
+
+def test_inspection_endpoint_returns_iteration_model_and_bounds_trace(web_viewer):
+    root, _, fetch = web_viewer
+    run = root / "run_inspect"
+    run.mkdir()
+    events = [
+        {"event": "run_started", "created_at": "2026-11-25T00:00:00+00:00", "task_id": "task_1", "user_request": "safe request"},
+        {"event": "model_requested", "created_at": "2026-11-25T00:00:01+00:00", "attempts": 1},
+        {"event": "model_parsed", "created_at": "2026-11-25T00:00:02+00:00", "kind": "final", "answer_preview": "done"},
+        {"event": "run_finished", "created_at": "2026-11-25T00:00:03+00:00", "status": "completed", "final_answer": "done"},
+    ]
+    (run / "trace.jsonl").write_text("".join(json.dumps(item) + "\n" for item in events), encoding="utf-8")
+    (run / "report.json").write_text(json.dumps({"status": "completed", "task_id": "task_1", "final_answer": "done"}), encoding="utf-8")
+
+    status, headers, body = fetch("/api/runs/run_inspect/inspection")
+    data = json.loads(body)
+
+    assert status == 200
+    assert headers["Cache-Control"] == "no-store"
+    assert data["schema_version"] == "page-inspection-v1"
+    assert data["run"]["status"] == "completed"
+    assert len(data["iterations"]) == 1
+    assert data["iterations"][0]["outcome"] == "final"
+    assert data["raw"]["events"][1]["iteration_id"].endswith("iteration:0001")
+
+def test_inspection_snapshot_reports_truncation_at_record_limit(web_viewer, monkeypatch):
+    root, _, fetch = web_viewer
+    run = root / "run_bounded"
+    run.mkdir()
+    events = [{"event": "model_requested", "attempts": number} for number in range(3)]
+    (run / "trace.jsonl").write_text("".join(json.dumps(item) + "\n" for item in events), encoding="utf-8")
+    monkeypatch.setattr(trace_web, "MAX_INSPECTION_RECORDS", 2)
+
+    status, _, body = fetch("/api/runs/run_bounded/inspection")
+    data = json.loads(body)
+
+    assert status == 200
+    assert data["raw"]["truncated"] is True
+    assert len(data["raw"]["events"]) == 2

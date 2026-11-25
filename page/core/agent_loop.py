@@ -24,6 +24,8 @@ class AgentLoop:
         task_state = TaskState.create(run_id=agent.new_run_id(), task_id=agent.new_task_id(), user_request=user_message)
         task_state.resume_status = agent.resume_state.get("status", CHECKPOINT_NONE_STATUS)
         agent.current_task_state = task_state
+        agent._trace_sequence = 0
+        agent._active_trace_tool_call = None
         agent.current_run_dir = agent.run_store.start_run(task_state)
         agent.emit_trace(
             task_state,
@@ -44,6 +46,18 @@ class AgentLoop:
         attempts = 0
         max_attempts = max(agent.max_steps * 3, agent.max_steps + 4)
         finalization_attempted = False
+        iteration_closed = False
+
+        def finish_iteration(outcome, **details):
+            nonlocal iteration_closed
+            if iteration_closed:
+                return
+            iteration_closed = True
+            agent.emit_trace(
+                task_state,
+                "iteration_finished",
+                {"outcome": outcome, "tool_steps": task_state.tool_steps, **details},
+            )
 
         # 这是 agent 的主循环，可以按“感知 -> 决策 -> 行动 -> 记录”来理解：
         # 1. 感知：重新组 prompt，把当前状态整理给模型看
@@ -60,7 +74,13 @@ class AgentLoop:
                 finalization_attempted = True
             attempts += 1
             task_state.record_attempt()
+            iteration_closed = False
             agent.run_store.write_task_state(task_state)
+            agent.emit_trace(
+                task_state,
+                "iteration_started",
+                {"attempt": task_state.attempts, "tool_steps": task_state.tool_steps},
+            )
             prompt_started_at = time.monotonic()
             try:
                 prompt, prompt_metadata = agent._build_prompt_and_metadata(user_message)
@@ -101,6 +121,7 @@ class AgentLoop:
                     "checkpoint_created",
                     {"checkpoint_id": checkpoint["checkpoint_id"], "trigger": "protected_context_overflow"},
                 )
+                finish_iteration("context_failed", reason="protected_context_overflow")
                 agent.emit_trace(
                     task_state,
                     "run_finished",
@@ -218,6 +239,7 @@ class AgentLoop:
                     "checkpoint_created",
                     {"checkpoint_id": checkpoint["checkpoint_id"], "trigger": "model_error"},
                 )
+                finish_iteration("model_failed", reason=type(exc).__name__)
                 agent.emit_trace(
                     task_state,
                     "run_finished",
@@ -263,16 +285,24 @@ class AgentLoop:
 
             if kind == "tool":
                 if finalizing:
+                    finish_iteration("finalization_tool_rejected", next_step="stop")
                     break
                 tool_steps += 1
                 name = payload.get("name", "")
                 args = payload.get("args", {})
-                call_id = str(payload.get("call_id", ""))
+                call_id = str(payload.get("call_id") or f"{task_state.run_id}:iteration:{task_state.attempts:04d}:tool:1")
                 task_state.record_tool(name)
                 if trace_detail:
-                    agent.emit_trace(task_state, "tool_requested", {"name": name, "args": args, "call_id": call_id})
+                    agent.emit_trace(task_state, "tool_requested", {"name": name, "args": args, "call_id": call_id, "tool_call_id": call_id})
                 tool_started_at = time.monotonic()
-                tool_result = agent.execute_tool(name, args)
+                agent._active_trace_tool_call = {
+                    "tool_call_id": call_id,
+                    "model_request_id": f"{task_state.run_id}:model:{task_state.attempts:04d}",
+                }
+                try:
+                    tool_result = agent.execute_tool(name, args)
+                finally:
+                    agent._active_trace_tool_call = None
                 result = tool_result.content
                 agent.record(
                     {
@@ -298,6 +328,8 @@ class AgentLoop:
                     {
                         "name": name,
                         "args": args,
+                        "call_id": call_id,
+                        "tool_call_id": call_id,
                         "result": result if trace_detail else clip(result, 500),
                         "duration_ms": int((time.monotonic() - tool_started_at) * 1000),
                         **({"verbose": True} if trace_detail else {}),
@@ -314,11 +346,13 @@ class AgentLoop:
                         "trigger": "tool_executed",
                     },
                 )
+                finish_iteration("tool", tool_call_id=call_id, tool_name=name, next_step="context")
                 continue
 
             if kind == "retry":
                 agent.record({"role": "assistant", "content": payload, "created_at": now()})
                 agent.run_store.write_task_state(task_state)
+                finish_iteration("retry", next_step="model")
                 if finalizing:
                     break
                 continue
@@ -328,6 +362,7 @@ class AgentLoop:
             agent.clear_native_tool_state()
             task_state.finish_success(final)
             agent.promote_durable_memory(user_message, final)
+            finish_iteration("final", next_step="verifier", answer_preview=agent.redact_text(clip(final, 120)))
             checkpoint = agent.create_checkpoint(task_state, user_message, trigger="run_finished")
             agent.run_store.write_task_state(task_state)
             agent.emit_trace(
@@ -360,6 +395,7 @@ class AgentLoop:
             task_state.stop_step_limit(final)
         agent.record({"role": "assistant", "content": final, "created_at": now()})
         agent.promote_durable_memory(user_message, final)
+        finish_iteration("stopped", reason=task_state.stop_reason)
         agent.run_store.write_task_state(task_state)
         checkpoint = agent.create_checkpoint(task_state, user_message, trigger=task_state.stop_reason or "run_stopped")
         agent.emit_trace(

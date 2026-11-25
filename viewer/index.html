@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>Page Trace · 运行观测</title>
+  <title>Page Agent Execution Inspector</title>
   <link rel="stylesheet" href="/styles.css">
   <script src="/app.js" defer></script>
 </head>
@@ -12,26 +12,30 @@
   <header class="topbar">
     <div class="brand">
       <span class="brand-mark" aria-hidden="true">P<span></span></span>
-      <div><strong>Page<span class="brand-trace">Trace</span></strong><span class="brand-caption">运行观测</span></div>
+      <div>
+        <strong>Page <span class="brand-accent">Agent Execution Inspector</span></strong>
+        <span class="brand-caption">本地运行证据 · 只读</span>
+      </div>
     </div>
-    <div class="header-actions">
-      <span class="connection" id="connection" role="status">正在连接</span>
-      <button class="button button-primary" type="button" id="follow" aria-pressed="true">实时跟随</button>
-      <button class="button" type="button" id="refresh">刷新</button>
+    <div class="topbar-actions">
+      <span id="connection" class="connection" role="status">正在连接</span>
+      <button id="follow" class="button button-primary" type="button" aria-pressed="true">实时跟随</button>
+      <button id="refresh" class="button" type="button">刷新</button>
     </div>
   </header>
 
-  <div class="workspace">
-    <aside class="sidebar" aria-labelledby="runs-heading">
-      <div class="sidebar-head">
-        <div class="section-title"><h2 id="runs-heading">运行记录</h2><span id="runCount" class="count-badge">0</span></div>
+  <div class="app-shell">
+    <aside class="run-sidebar" aria-labelledby="runs-heading">
+      <div class="sidebar-heading">
+        <div class="eyebrow">WORKSPACE RUNS</div>
+        <div class="heading-line"><h2 id="runs-heading">运行记录</h2><span id="runCount" class="count-badge">0</span></div>
         <label class="sr-only" for="runSearch">搜索运行</label>
-        <input type="search" id="runSearch" spellcheck="false" placeholder="搜提问、模型或 Run ID">
+        <input id="runSearch" class="search-input" type="search" spellcheck="false" placeholder="搜任务、模型或 Run ID">
         <label class="sr-only" for="runStatus">按运行状态筛选</label>
-        <select id="runStatus">
+        <select id="runStatus" class="select-input">
           <option value="">全部状态</option>
           <option value="completed">已完成</option>
-          <option value="unfinished">未结束</option>
+          <option value="unfinished">未结束或未知</option>
           <option value="failed">失败</option>
           <option value="stopped">已停止</option>
         </select>
@@ -39,65 +43,50 @@
       <div id="runList" class="run-list" aria-label="运行列表">
         <p class="empty-state">正在读取运行记录…</p>
       </div>
-      <div class="sidebar-footer"><span class="folder-mark" aria-hidden="true"></span> 本地日志 · 只读</div>
+      <div class="sidebar-footer"><span class="dot-mark" aria-hidden="true"></span><span>127.0.0.1 · JSONL 只读</span></div>
     </aside>
 
-    <main class="dashboard" aria-label="运行追踪详情">
-      <section class="overview" aria-labelledby="runTitle">
-        <div class="run-heading">
-          <div>
-            <div class="run-kicker"><span>运行概览</span><span id="runId" class="run-id"></span></div>
-            <h1 id="runTitle">选择一条运行</h1>
-            <p id="runMeta" class="run-meta">在 Page 发起请求后，这里会显示它的执行过程。</p>
-          </div>
-          <span class="status-pill is-neutral" id="runBadge">等待日志</span>
+    <main class="main-panel" aria-label="Agent 执行检查器">
+      <section class="run-header panel">
+        <div class="run-header-main">
+          <div class="eyebrow">SELECTED RUN</div>
+          <div class="title-line"><h1 id="runTitle">选择一条运行</h1><span id="runBadge" class="status-pill is-neutral">等待日志</span></div>
+          <p id="runMeta" class="run-meta">在 Page 发起请求后，这里会显示真实执行证据。</p>
+          <div id="identityLine" class="identity-line"></div>
         </div>
-
-        <div class="metrics" aria-label="运行统计">
-          <div class="metric metric-model"><span>模型调用轮次</span><strong id="statCalls">—</strong><small id="statHttpDetail">已记录的调用轮次</small></div>
-          <div class="metric metric-tool"><span>工具调用</span><strong id="statTools">—</strong><small>含拒绝与失败</small></div>
-          <div class="metric metric-token"><span>Token 用量</span><strong id="statTokens">—</strong><small id="statTokenDetail">以服务端返回为准</small></div>
-          <div class="metric metric-time"><span>运行耗时</span><strong id="statDuration">—</strong><small>结束时记录总耗时</small></div>
-        </div>
-
-        <div class="path-panel">
-          <div class="section-title path-title"><h2>阶段概览</h2><span id="captureBadge" class="capture-badge">等待日志</span></div>
-          <ol id="stages" class="stages" aria-label="已记录的执行阶段"></ol>
+        <div class="run-header-actions">
+          <span id="captureBadge" class="capture-badge">等待日志</span>
+          <span id="traceNote" class="header-note"></span>
         </div>
       </section>
 
-      <div class="explorer">
-        <section class="timeline panel" aria-labelledby="timeline-heading">
-          <header class="panel-heading">
-            <div class="section-title"><h2 id="timeline-heading">执行时间线</h2><span id="eventCount" class="count-badge">0</span></div>
-            <div id="eventFilters" class="filter-group" aria-label="筛选时间线事件">
-              <button type="button" data-filter="focus" aria-pressed="true">关键事件</button>
-              <button type="button" data-filter="all" aria-pressed="false">全部</button>
-              <button type="button" data-filter="context" aria-pressed="false">上下文</button>
-              <button type="button" data-filter="model" aria-pressed="false">模型</button>
-              <button type="button" data-filter="tool" aria-pressed="false">工具</button>
-              <button type="button" data-filter="recovery" aria-pressed="false">恢复</button>
-            </div>
-          </header>
-          <div id="eventList" class="event-list" aria-label="按时间顺序排列的事件">
-            <p class="empty-state">选中一条运行后查看事件。</p>
-          </div>
-        </section>
+      <section id="metricGrid" class="metric-grid" aria-label="运行统计"></section>
 
-        <section class="inspector panel" aria-labelledby="detailTitle">
-          <header class="panel-heading">
-            <div id="detailTabs" class="filter-group detail-tabs" aria-label="详情视图">
-              <button type="button" data-inspector="event" aria-pressed="true">事件详情</button>
-              <button type="button" data-inspector="report" aria-pressed="false">运行报告</button>
-            </div>
-            <div class="section-title detail-heading"><h2 id="detailTitle">等待选择事件</h2><span id="detailTag" class="detail-tag"></span></div>
-          </header>
-          <div id="detailBody" class="detail-body">
-            <p class="empty-state">选择时间线上的事件，查看它收到什么、作出什么判断，以及产生了什么结果。</p>
-          </div>
-        </section>
-      </div>
+      <nav id="viewTabs" class="view-tabs" aria-label="检查视图">
+        <button type="button" data-view="overview" aria-selected="true"><span>01</span>概览</button>
+        <button type="button" data-view="execution" aria-selected="false"><span>02</span>执行</button>
+        <button type="button" data-view="context" aria-selected="false"><span>03</span>上下文</button>
+        <button type="button" data-view="model" aria-selected="false"><span>04</span>模型</button>
+        <button type="button" data-view="tools" aria-selected="false"><span>05</span>工具</button>
+        <button type="button" data-view="recovery" aria-selected="false"><span>06</span>恢复</button>
+        <button type="button" data-view="evaluation" aria-selected="false"><span>07</span>评测</button>
+        <button type="button" data-view="raw" aria-selected="false"><span>08</span>原始 Trace</button>
+      </nav>
+
+      <section id="viewRoot" class="view-root" aria-live="polite">
+        <div class="empty-panel"><strong>选择一条运行</strong><span>左侧运行列表会显示当前工作区的 Page 工件。</span></div>
+      </section>
     </main>
+
+    <aside id="detailDrawer" class="detail-drawer panel" aria-labelledby="detailTitle">
+      <div class="drawer-heading">
+        <div><div class="eyebrow">EVIDENCE</div><h2 id="detailTitle">等待选择证据</h2></div>
+        <button id="closeDetail" class="icon-button" type="button" aria-label="关闭证据详情">×</button>
+      </div>
+      <div id="detailBody" class="drawer-body">
+        <div class="empty-panel compact"><strong>选择一个步骤</strong><span>这里会展示实际采集的输入、判断、结果和原始字段。</span></div>
+      </div>
+    </aside>
   </div>
 </body>
 </html>

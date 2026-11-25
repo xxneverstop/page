@@ -12,6 +12,7 @@
 | 历史恢复演示的原始结果与限制 | [Recovery 演示归档](../benchmarks/results/recovery-demo-archive/DATA_PROVENANCE.md) |
 | CLI 交互调整记录 | [CLI 体验记录](develop/optimize-cli-ux.md) |
 | 本次结构规整与验证结果 | [2026-11-18 规整记录](develop/2026-11-18-project-structure-cleanup.md) |
+| Trace 字段、关联规则和采集边界 | [Page Trace Format](../TRACE_FORMAT.md) |
 
 `develop/` 保存开发记录，`plans/` 保存计划，`my-docs/` 保存个人学习资料。除明确放行的文件外，这些目录中的本地资料默认不进入 Git；正式资料不依赖它们。移动到文档目录的 [外部文章阅读笔记](my-docs/fable5_prompt_leak_cl4_summary.md) 保留原文内容和来源说明，不属于项目实现证据。
 

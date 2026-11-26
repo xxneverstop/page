@@ -1,19 +1,12 @@
 # Page 文档索引
 
-正式资料从下面几个入口阅读：
+本 Worktree 是 Page Minimal Agent Harness 的重建基线。旧版源码和历史运行工件保留用于对照，不参与新版 `core` 运行链路。
 
-| 内容 | 入口 |
-| --- | --- |
-| 后续工作的执行依据、环境与验收 | [Page Roadmap v2](roadmap/roadmap-v2.md) |
-| 项目安装、模型配置和 CLI 使用 | [根 README](../README.md) |
-| 目标架构、上下文与运行边界 | [Roadmap v2 首轮目标](roadmap/roadmap-v2.md#项目定位与首轮目标) |
-| 五分钟演示、实验报告与面试问答 | [面试评审包](review-pack/README.md) |
-| 固定回归与模块消融的历史口径 | [核心实验来源说明](../benchmarks/results/main-resume-repro-2026-06-07/DATA_PROVENANCE.md) |
-| 历史恢复演示的原始结果与限制 | [Recovery 演示归档](../benchmarks/results/recovery-demo-archive/DATA_PROVENANCE.md) |
-| CLI 交互调整记录 | [CLI 体验记录](develop/optimize-cli-ux.md) |
-| 本次结构规整与验证结果 | [2026-11-18 规整记录](develop/2026-11-18-project-structure-cleanup.md) |
-| Trace 字段、关联规则和采集边界 | [Page Trace Format](../TRACE_FORMAT.md) |
+- [architecture.md](architecture.md)：主循环与组件边界。
+- [contracts.md](contracts.md)：消息、工具、事件和运行工件约定。
+- [development.md](development.md)：安装、测试、CLI 和 Viewer。
+- [roadmap/roadmap-v3.md](roadmap/roadmap-v3.md)：M0–M7 阶段入口。
+- [plans/page-minimal-agent-rebuild-plan.md](plans/page-minimal-agent-rebuild-plan.md)：总体重建计划。
+- [plans/2026-11-25-minimal-rebuild-m0.md](plans/2026-11-25-minimal-rebuild-m0.md)：基线和实施记录。
 
-`develop/` 保存开发记录，`plans/` 保存计划，`my-docs/` 保存个人学习资料。除明确放行的文件外，这些目录中的本地资料默认不进入 Git；正式资料不依赖它们。移动到文档目录的 [外部文章阅读笔记](my-docs/fable5_prompt_leak_cl4_summary.md) 保留原文内容和来源说明，不属于项目实现证据。
-
-`scripts/` 中命令的默认任务、fixture 与输出路径以项目根目录为基准；命令行显式提供的相对路径仍以启动目录为基准。为便于复现，文档中的相对路径命令统一从项目根目录运行。新的本地运行输出写入 `artifacts/` 或 `.page/`，需要长期引用的结果另行归档到 `benchmarks/results/`，并记录数据来源。
+阶段记录只写已验证的事实、命令和限制；历史 Benchmark 不与新结果混算。

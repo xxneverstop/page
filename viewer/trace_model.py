@@ -36,6 +36,16 @@ CATEGORY_BY_PREFIX = {
     "evaluation_": "evaluation",
     "verifier_": "evaluation",
 }
+MINIMAL_EVENT_ALIASES = {
+    "agent_start": "run_started",
+    "agent_end": "run_finished",
+    "turn_start": "iteration_started",
+    "turn_end": "iteration_finished",
+    "model_request": "model_requested",
+    "model_response": "model_parsed",
+    "tool_start": "tool_requested",
+    "tool_end": "tool_executed",
+}
 MODEL_EVENTS = {
     "prompt_built",
     "prompt_rendered",
@@ -79,7 +89,7 @@ def _clip_text(value, limit=MAX_PREVIEW_CHARS):
 
 
 def event_category(event_name):
-    name = _text(event_name)
+    name = MINIMAL_EVENT_ALIASES.get(_text(event_name), _text(event_name))
     if name in {"run_started", "run_finished", "iteration_started", "iteration_finished"}:
         return "lifecycle"
     if name in {"model_parsed", "finalization_requested"}:
@@ -119,7 +129,9 @@ def normalize_events(events, run_id="", state=None, report=None):
         if not isinstance(original, dict):
             continue
         event = dict(original)
-        name = _text(event.get("event")) or "unknown"
+        raw_name = _text(event.get("event")) or "unknown"
+        name = MINIMAL_EVENT_ALIASES.get(raw_name, raw_name)
+        event.setdefault("source_event", raw_name)
         explicit_iteration_id = bool(_text(event.get("iteration_id")))
         explicit_model_request_id = bool(_text(event.get("model_request_id")))
         explicit_tool_call_id = bool(_text(event.get("tool_call_id") or event.get("call_id")))

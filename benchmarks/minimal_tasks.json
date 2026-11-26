@@ -1,0 +1,8 @@
+[
+  {"task_id":"read-symbol","prompt":"读取一个 Python 文件并说明公开入口","tags":["read"]},
+  {"task_id":"search-usage","prompt":"搜索一个函数的调用点并列出文件和行号","tags":["search"]},
+  {"task_id":"write-small","prompt":"在工作区新建一个最小配置文件并验证内容","tags":["write"]},
+  {"task_id":"edit-small","prompt":"修改一个固定字符串并运行独立断言","tags":["edit","verify"]},
+  {"task_id":"test-repair","prompt":"运行一个先失败后可修复的测试，读取错误并再次执行","tags":["repair","test"]},
+  {"task_id":"resume-safe","prompt":"在显式 Resume 边界恢复一个已记录的安全动作并验证状态","tags":["recovery"]}
+]

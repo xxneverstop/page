@@ -43,9 +43,17 @@ release/
 # Local docs not intended for publication
 docs/*
 !docs/README.md
+!docs/architecture.md
+!docs/contracts.md
+!docs/development.md
+!docs/plans/
+!docs/plans/*.md
+!docs/decisions/
+!docs/decisions/*.md
 !docs/roadmap/
 docs/roadmap/*
 !docs/roadmap/roadmap-v2.md
+!docs/roadmap/roadmap-v3.md
 !docs/review-pack/
 !docs/architecture/
 !docs/develop/

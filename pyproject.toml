@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "page"
-version = "0.1.0"
-description = "Small local coding agent for DeepSeek, OpenAI-compatible, Anthropic-compatible, and Ollama models"
+version = "0.2.0"
+description = "Minimal, reliable Python coding agent harness"
 requires-python = ">=3.10"
 dependencies = []
 
 [project.scripts]
-page = "page.cli:main"
+page = "core.cli:main"
 
 [dependency-groups]
 dev = [
@@ -19,10 +19,18 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["page*"]
+include = ["core*"]
+exclude = ["page*", "tests*"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = [
+  "tests/minimal_core_test.py",
+  "tests/minimal_tools_test.py",
+  "tests/minimal_context_test.py",
+  "tests/minimal_repair_test.py",
+  "tests/minimal_provider_test.py",
+  "tests/unit/test_minimal_support.py",
+]
 addopts = "-p no:cacheprovider"
 markers = [
   "slow: deterministic benchmark or ablation suites not required for the interview smoke test",

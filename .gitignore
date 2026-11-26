@@ -60,6 +60,7 @@ docs/roadmap/*
 docs/develop/*
 !docs/develop/optimize-cli-ux.md
 !docs/develop/2026-11-18-project-structure-cleanup.md
+!docs/develop/page-minimal-development-guide.md
 !docs/my-docs/
 docs/my-docs/*
 !docs/my-docs/fable5_prompt_leak_cl4_summary.md

@@ -8,5 +8,6 @@
 - [roadmap/roadmap-v3.md](roadmap/roadmap-v3.md)：M0–M7 阶段入口。
 - [plans/page-minimal-agent-rebuild-plan.md](plans/page-minimal-agent-rebuild-plan.md)：总体重建计划。
 - [plans/2026-11-25-minimal-rebuild-m0.md](plans/2026-11-25-minimal-rebuild-m0.md)：基线和实施记录。
+- [develop/page-minimal-development-guide.md](develop/page-minimal-development-guide.md)：安装、运行、验证和手动测试手册。
 
 阶段记录只写已验证的事实、命令和限制；历史 Benchmark 不与新结果混算。
